@@ -27,7 +27,17 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # 本机 Python 里装了一堆跟本工具无关的包，PyInstaller 会顺着 hook 把它们
+    # 一起收进来 —— numpy 一家就贡献约 17MB（含 OpenBLAS DLL），本地打出来
+    # 32.8MB，而干净的 CI 环境只要 14.3MB 且功能完全正常。显式排除，保证两边一致。
+    excludes=[
+        "numpy", "PIL", "yaml", "charset_normalizer",
+        "win32", "pywin32", "pywin32_system32", "pythoncom",
+        "setuptools", "pkg_resources", "pip", "wheel",
+        "requests", "urllib3", "certifi", "idna",
+        "pytest", "_pytest", "unittest", "pydoc", "doctest",
+        "lib2to3", "distutils",
+    ],
     noarchive=False,
 )
 

@@ -36,11 +36,22 @@ jobs:
         # （core 符号齐全 / customtkinter 资源齐全 / GUI 可导入）就够了。
         run: ./build.ps1 -Python python -NoNetwork
 
+      # 关键：别把中文文件名交给 gh.exe / upload-artifact。
+      # 实测 PowerShell → gh.exe 的 argv 会把中文破坏掉，Release 附件名会变成
+      # 莫名其妙的 default.exe。复制成 ASCII 名再往外发，顺带对下载者也友好。
+      - name: 规范产物名
+        shell: pwsh
+        run: |
+          $src = Get-ChildItem dist\*.exe | Select-Object -First 1
+          $asset = "cx-downloader-$env:GITHUB_REF_NAME.exe"
+          Copy-Item $src.FullName $asset -Force
+          Write-Host "产物: $asset  ($([math]::Round((Get-Item $asset).Length/1MB,1)) MB)"
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: chaoxing-downloader-exe
-          path: dist/*.exe
+          path: cx-downloader-*.exe
           if-no-files-found: error
 
       - name: 挂到 Release
@@ -49,15 +60,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $exe = Get-ChildItem dist\*.exe | Select-Object -First 1
-          Write-Host "产物: $($exe.FullName)  ($([math]::Round($exe.Length/1MB,1)) MB)"
-
+          $asset = "cx-downloader-$env:GITHUB_REF_NAME.exe"
           gh release view $env:GITHUB_REF_NAME *> $null
           if ($LASTEXITCODE -eq 0) {
             # Release 已存在（比如重推同名 tag），覆盖附件
-            gh release upload $env:GITHUB_REF_NAME $exe.FullName --clobber
+            gh release upload $env:GITHUB_REF_NAME $asset --clobber
           } else {
-            gh release create $env:GITHUB_REF_NAME $exe.FullName `
+            gh release create $env:GITHUB_REF_NAME $asset `
               --title $env:GITHUB_REF_NAME `
               --generate-notes
           }
