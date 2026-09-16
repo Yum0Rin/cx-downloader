@@ -119,7 +119,12 @@ pip install pyinstaller
 pwsh -NoProfile -File build.ps1
 ```
 
-产物在 `dist\超星文件下载器.exe`（约 31 MB）。构建脚本会：
+产物在 `dist\超星文件下载器.exe`（约 31 MB）。
+
+> `build/` 和 `dist/` 都在 `.gitignore` 里：31 MB 的二进制进了 git 历史就永久撑大仓库，
+> 而且每次构建都不一样。**要发给别人请挂到 GitHub Releases**，别提交进仓库。
+
+构建脚本会：
 
 1. 校验源文件齐全
 2. 缺图标就调 `make_icon.py` 生成
