@@ -20,3 +20,6 @@ desktop.ini
 # ---- 本地配置与自检样例（含个人环境信息，别提交）----
 .cx_download_gui.json
 selftest_oids.local
+
+# ---- 给 agent 自己看的项目说明：带本机路径和测试课程信息，不进公开仓库 ----
+AGENTS.md
