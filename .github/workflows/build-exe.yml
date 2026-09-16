@@ -16,9 +16,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           # 跟本地构建用的版本保持一致；升版本记得本地也验一遍
           python-version: "3.13"
@@ -48,7 +48,7 @@ jobs:
           Write-Host "产物: $asset  ($([math]::Round((Get-Item $asset).Length/1MB,1)) MB)"
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: chaoxing-downloader-exe
           path: cx-downloader-*.exe
