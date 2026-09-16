@@ -138,6 +138,26 @@ pwsh -File build.ps1 -NoNetwork        # 自检不联网
 pwsh -File build.ps1 -SelftestOids <oid>,<oid>   # 换自检样例
 ```
 
+### 自动构建 / 发版
+
+`.github/workflows/build-exe.yml`：
+
+| 触发 | 行为 |
+| --- | --- |
+| 推 `main` / 手动触发 | 构建 exe，作为 workflow artifact 上传（不发 Release） |
+| 打 tag `v*` | 构建并**自动挂到 Release** |
+
+发版就两条命令：
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+> CI 里跑的是 `build.ps1 -NoNetwork`：自检的联网部分要去下载两个学习通公开预览文件，
+> 样例随时可能失效，**CI 不该依赖外部服务** —— 只验打包完整性
+> （core 符号齐全 / customtkinter 资源齐全 / GUI 可导入）就够了。
+
 ---
 
 ## 项目结构
