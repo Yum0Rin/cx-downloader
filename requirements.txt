@@ -1,0 +1,6 @@
+# 运行 / 打包所需的第三方依赖
+# 命令行版 cx_download.py 只用标准库，不需要装任何东西
+customtkinter>=6.0.0
+
+# 仅打包 exe 时需要
+pyinstaller>=6.0

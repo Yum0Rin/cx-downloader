@@ -1,0 +1,22 @@
+# ---- 构建产物（不要进仓库，发版走 GitHub Releases）----
+build/
+dist/
+*.spec.bak
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# ---- 本地配置与自检样例（含个人环境信息，别提交）----
+.cx_download_gui.json
+selftest_oids.local
