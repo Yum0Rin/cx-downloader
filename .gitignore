@@ -1,7 +1,10 @@
 # ---- 构建产物（不要进仓库，发版走 GitHub Releases）----
 build/
 dist/
+out/
 *.spec.bak
+app_preview.png
+app.icns
 
 # ---- Python ----
 __pycache__/

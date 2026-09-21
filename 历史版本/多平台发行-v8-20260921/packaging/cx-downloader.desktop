@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=超星文件下载器
+GenericName=Chaoxing Course Downloader
+Comment=批量下载超星学习通课程课件
+Comment[en]=Batch-download Chaoxing course materials
+# 前提：把构建产物放到 PATH 上并叫这个名（见 README「Linux / macOS」）：
+#   cp dist/超星文件下载器 ~/.local/bin/cx-downloader
+Exec=cx-downloader
+Icon=cx-downloader
+Terminal=false
+Categories=Network;Utility;
+Keywords=chaoxing;mooc;download;超星;学习通;
+StartupNotify=true
