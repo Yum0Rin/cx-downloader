@@ -110,3 +110,18 @@ jobs:
           # 三个平台并行跑，Release 可能已被别的 job 建好 —— 建失败不算错
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
           gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+          # 用 CHANGELOG 里对应版本的段落当 Release 正文。
+          # （--generate-notes 对「没有 PR、提交也不规范」的仓库只会给一行 compare 链接）
+          ver="${GITHUB_REF_NAME#v}"
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$ver" '
+              $0 ~ ("^## \\[" ver "\\]") { f=1; next }
+              f && /^## \[/ { exit }
+              f { print }
+            ' CHANGELOG.md > /tmp/cx_notes.md
+            if [ -s /tmp/cx_notes.md ]; then
+              # 产物已经传好了，notes 更新失败不该拖垮整个发布
+              gh release edit "$GITHUB_REF_NAME" --notes-file /tmp/cx_notes.md \
+                || echo "::warning::Release notes 更新失败（不影响产物）"
+            fi
+          fi
