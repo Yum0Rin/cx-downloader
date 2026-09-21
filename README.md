@@ -181,8 +181,8 @@ bash build.sh --oids <oid>,<oid>
 发版就两条命令：
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 > CI 里跑的是 `-NoNetwork`：自检的联网部分要去下载两个学习通公开预览文件，
@@ -207,6 +207,13 @@ app.ico
 docs/                       README 用的截图
 历史版本/                    每次较大改动的存档（该版本的源码 + README 说明）
 ```
+
+---
+
+## 更新日志
+
+逐版本的用户可见变更见 [CHANGELOG.md](CHANGELOG.md)。
+`历史版本/` 里存的则是各版本的**源码快照 + 设计说明**（用于回滚和复盘）。
 
 ---
 
