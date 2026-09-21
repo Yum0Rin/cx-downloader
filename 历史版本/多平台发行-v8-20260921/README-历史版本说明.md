@@ -66,6 +66,9 @@
   `cx-downloader-<tag>-{windows.exe,linux,macos}`。
 - Linux job 先 `apt-get install -y tk`（PyInstaller 要把 Tk 运行库收进包）。
 - 并行建 Release 有竞态：先 `gh release create`（失败忽略）再 `gh release upload --clobber`。
+- **踩坑**：仓库是 `core.filemode=false`（Windows 挂载盘），`build.sh` 在 git 里被记成
+  不可执行（100644）→ CI 里 `./build.sh` 直接 `Permission denied`，linux/macos 两个 job
+  同一处失败（windows 走 pwsh 不受影响）。**改为 `bash ./build.sh` 调用**，README 同步。
 
 ---
 

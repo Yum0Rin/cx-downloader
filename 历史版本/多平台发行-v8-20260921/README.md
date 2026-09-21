@@ -143,7 +143,7 @@ pwsh -NoProfile -File build.ps1
 
 # Linux / macOS
 pip install pyinstaller
-./build.sh
+bash build.sh
 ```
 
 产物在 `dist/超星文件下载器`（Windows 上是 `dist\超星文件下载器.exe`，约 31 MB）。
@@ -164,9 +164,9 @@ pwsh -File build.ps1 -SkipSelftest     # 只打包
 pwsh -File build.ps1 -NoNetwork        # 自检不联网
 pwsh -File build.ps1 -SelftestOids <oid>,<oid>   # 换自检样例
 
-./build.sh --skip-selftest             # Linux / macOS 同理
-./build.sh --no-network
-./build.sh --oids <oid>,<oid>
+bash build.sh --skip-selftest             # Linux / macOS 同理
+bash build.sh --no-network
+bash build.sh --oids <oid>,<oid>
 ```
 
 ### 自动构建 / 发版

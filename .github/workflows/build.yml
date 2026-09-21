@@ -55,7 +55,9 @@ jobs:
       - name: 打包 + 冻结自检（Linux / macOS）
         if: matrix.platform != 'windows'
         shell: bash
-        run: ./build.sh --no-network
+        # 用 bash 显式调用：仓库 core.filemode=false，build.sh 在 git 里不是可执行位，
+        # 直接 ./build.sh 会 Permission denied
+        run: bash ./build.sh --no-network
 
       # 关键：别把中文文件名交给 gh.exe / upload-artifact。
       # 实测 PowerShell → gh.exe 的 argv 会把中文破坏掉，Release 附件名会变成
