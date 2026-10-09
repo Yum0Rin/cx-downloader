@@ -1713,7 +1713,7 @@ class App(ctk.CTk):
                 self.log(f"    {note}: {os.path.basename(dest)}　{core.human(size)}", "dim")
         else:
             self.fail += 1
-            self.log(f"✘ {r['objectid']}", "err")
+            self.log(f"✘ {r.get('filename') or r['objectid']}", "err")
             self.log(f"    {r['error']}", "err")
 
     def _finish(self):

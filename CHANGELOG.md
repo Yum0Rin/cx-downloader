@@ -2,6 +2,19 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.1] - 2026-10-09
+
+### 修复
+
+- **原件本身就是 PDF 的文件被误报失败**：超星 `/ananas/status/` 返回的
+  `status` 是「转码状态」，不是「能不能下」。已转码 / 无需转码（原生 PDF）的文件
+  `status` 可能是 `failed`，且没有 `pdf` 字段、只有 `download`。旧逻辑在
+  `status != "success"` 时直接判失败（表现：报 `接口返回 status='failed'`、
+  列表里只有一长串 objectid）。现在改成**按实际可用地址判断**：有 `download`/`pdf`
+  就下；「仅 PDF」模式下若原件已是 PDF，则把 `download` 直接落成 `.pdf`。
+- 失败项现在显示**文件名**而非裸 objectid（`res["filename"]` 在取名后即写入，
+  不再只在成功路径设置），日志更好认。
+
 ## [1.1.0] - 2026-09-21
 
 多平台发行：在原有 Windows 基础上适配 macOS / Linux，并让三平台都能出免安装包。
@@ -45,5 +58,6 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.1.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Yum0Rin/cx-downloader/releases/tag/v1.0.0

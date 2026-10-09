@@ -298,18 +298,27 @@ def process_one(
     res = {"objectid": oid, "ok": False, "files": [], "error": None}
     try:
         st = fetch_status(oid, cookie, timeout)
-        if st.get("status") != "success":
-            raise RuntimeError(f"接口返回 status={st.get('status')!r}")
+        status = st.get("status")
 
         fname = resolve_name(name_hint, st.get("filename"), oid)
         stem, ext = split_ext(fname)
+        res["filename"] = fname   # 失败时也要带出文件名，别只甩 objectid
 
         jobs: list[tuple[str, str]] = []
         if want_original and st.get("download"):
             jobs.append((st["download"], os.path.join(outdir, fname)))
-        if want_pdf and st.get("pdf"):
-            jobs.append((st["pdf"], os.path.join(outdir, (sanitize(stem, oid) or oid) + ".pdf")))
+        if want_pdf:
+            pdf_name = (sanitize(stem, oid) or oid) + ".pdf"
+            if st.get("pdf"):
+                jobs.append((st["pdf"], os.path.join(outdir, pdf_name)))
+            elif ext.lower() == ".pdf" and st.get("download"):
+                # 原件本身就是 PDF：服务端不做转码，所以没有 pdf 字段，
+                # status 往往是 "failed"（那是「转码状态」，不是「能不能下」）。
+                # 直接把 download 存成 .pdf，别因为 status 就判死。
+                jobs.append((st["download"], os.path.join(outdir, pdf_name)))
         if not jobs:
+            if status and status != "success":
+                raise RuntimeError(f"接口返回 status={status!r}，且没给出可下载地址")
             raise RuntimeError("接口未返回可下载地址（download/pdf 都为空）")
 
         for url, dest in jobs:
@@ -329,7 +338,6 @@ def process_one(
             res["files"].append((dest, size, "下载完成"))
 
         res["ok"] = True
-        res["filename"] = fname
         res["pagenum"] = st.get("pagenum")
     except Exception as e:  # noqa: BLE001
         res["error"] = str(e)
@@ -1020,7 +1028,7 @@ def main() -> int:
                     log(f"     {note}: {os.path.basename(dest)}  {human(size)}")
             else:
                 fail += 1
-                log(f"[失败] {r['objectid']}\n       {r['error']}")
+                log(f"[失败] {r.get('filename') or r['objectid']}\n       {r['error']}")
 
     log(f"\n完成: 成功 {ok} / 失败 {fail}，耗时 {time.time() - t0:.1f}s")
     log(f"目录: {outdir}")
