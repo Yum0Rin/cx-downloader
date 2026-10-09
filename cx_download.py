@@ -244,36 +244,54 @@ def download(url: str, dest: str, timeout: int, retries: int = 3,
              cookie: str | None = None) -> int:
     """流式下载到 dest.tmp 再改名，避免半截文件。返回字节数。
 
+    断点续传：出错（尤其冷节点读超时）时**保留 .tmp**，下一轮带 `Range` 从断点接着下，
+    不再从 0 重来 —— 否则碰上「只吐一点数据就长时间停滞」的云盘节点会永远下不完。
+    服务端若忽略 Range（照旧回 200）则回退为整包重下。
+
     注意: d0.cldisk.com 的 download 直链会校验 Referer，缺了会 403。
     cookie 只对 chaoxing 自己的域名传（云盘直链不需要，也不该把课程 cookie 发过去）。
     """
     tmp = dest + ".tmp"
-    headers = {"User-Agent": UA, "Referer": "https://mooc1.chaoxing.com/"}
+    base_headers = {"User-Agent": UA, "Referer": "https://mooc1.chaoxing.com/"}
     if cookie:
-        headers["Cookie"] = cookie
+        base_headers["Cookie"] = cookie
     last: Exception | None = None
     for attempt in range(retries):
+        done = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+        headers = dict(base_headers)
+        if done:
+            headers["Range"] = f"bytes={done}-"
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp, open(tmp, "wb") as f:
-                total = 0
-                while True:
-                    chunk = resp.read(256 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    total += len(chunk)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                # 服务端不支持 Range（忽略后仍回 200）→ 只能从头写
+                if done and resp.status == 200:
+                    done = 0
+                with open(tmp, "ab" if done else "wb") as f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
             os.replace(tmp, dest)
-            return total
+            return done
+        except urllib.error.HTTPError as e:
+            # 416：Range 起点已到末尾 → .tmp 其实就是完整文件
+            if e.code == 416 and done and os.path.exists(tmp):
+                os.replace(tmp, dest)
+                return done
+            last = e
         except Exception as e:  # noqa: BLE001
             last = e
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-            if attempt < retries - 1:
-                time.sleep(1.5 * (attempt + 1))
+        if attempt < retries - 1:
+            time.sleep(1.5 * (attempt + 1))
+    # 全部失败才清掉半截 .tmp（中途失败要留着给下次续传）
+    if os.path.exists(tmp):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
     raise RuntimeError(f"下载失败: {last}")
 
 
@@ -283,6 +301,24 @@ def human(n: int) -> str:
             return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
         n /= 1024.0
     return f"{n:.1f}GB"
+
+
+# 视频任务点的扩展名 + 特征字段：这类对象不走文档下载接口（状态里只有
+# dtoken/mp3/截图/duration，没有 download/pdf），单独识别出来标「跳过」而非「失败」。
+VIDEO_EXTS = {
+    ".mp4", ".m4v", ".avi", ".flv", ".mkv", ".mov", ".wmv", ".rmvb", ".rm",
+    ".webm", ".ts", ".m3u8", ".f4v", ".3gp", ".mpg", ".mpeg", ".vob",
+}
+
+
+def _looks_like_video(st: dict, ext: str) -> bool:
+    if ext.lower() in VIDEO_EXTS:
+        return True
+    # 没有可直接下载的地址，却带视频专有字段 → 判为视频
+    return (
+        not (st.get("download") or st.get("pdf"))
+        and any(k in st for k in ("dtoken", "duration"))
+    )
 
 
 def process_one(
@@ -295,7 +331,7 @@ def process_one(
     overwrite: bool,
     name_hint: str | None = None,
 ) -> dict:
-    res = {"objectid": oid, "ok": False, "files": [], "error": None}
+    res = {"objectid": oid, "ok": False, "files": [], "error": None, "skip": False}
     try:
         st = fetch_status(oid, cookie, timeout)
         status = st.get("status")
@@ -317,6 +353,11 @@ def process_one(
                 # 直接把 download 存成 .pdf，别因为 status 就判死。
                 jobs.append((st["download"], os.path.join(outdir, pdf_name)))
         if not jobs:
+            if _looks_like_video(st, ext):
+                # 视频任务点（mp4 等）不走文档这套接口，直接标为「跳过」，不算失败
+                res["skip"] = True
+                res["skip_reason"] = "视频，不支持"
+                return res
             if status and status != "success":
                 raise RuntimeError(f"接口返回 status={status!r}，且没给出可下载地址")
             raise RuntimeError("接口未返回可下载地址（download/pdf 都为空）")
@@ -1006,7 +1047,7 @@ def main() -> int:
     log(f"\n共 {len(jobs)} 个文件")
     log(f"模式: {'仅PDF' if args.pdf_only else ('原件+PDF' if args.pdf else '仅原件')}, 并发 {args.jobs}\n")
 
-    ok = fail = 0
+    ok = fail = skip = 0
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
         futs = {}
@@ -1020,7 +1061,10 @@ def main() -> int:
             futs[fut] = payload
         for fut in as_completed(futs):
             r = fut.result()
-            if r["ok"]:
+            if r.get("skip"):
+                skip += 1
+                log(f"[跳过] {r.get('filename') or r['objectid']}　（{r.get('skip_reason', '不支持')}）")
+            elif r["ok"]:
                 ok += 1
                 extra = f"  ({r['pagenum']}p)" if r.get("pagenum") else ""
                 log(f"[OK] {r.get('filename')}{extra}")
@@ -1030,7 +1074,7 @@ def main() -> int:
                 fail += 1
                 log(f"[失败] {r.get('filename') or r['objectid']}\n       {r['error']}")
 
-    log(f"\n完成: 成功 {ok} / 失败 {fail}，耗时 {time.time() - t0:.1f}s")
+    log(f"\n完成: 成功 {ok} / 跳过 {skip} / 失败 {fail}，耗时 {time.time() - t0:.1f}s")
     log(f"目录: {outdir}")
     return 0 if fail == 0 else 1
 

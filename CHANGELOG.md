@@ -2,6 +2,24 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.2] - 2026-10-09
+
+### 变更
+
+- **视频任务点改为「跳过」而不是「失败」**：mp4 等视频任务点的 `/ananas/status/` 只返回
+  `mp3/screenshot/dtoken/duration`，没有 `download/pdf`，工具结构上无法下载。现在识别为视频并
+  标记「跳过（视频，不支持）」，不再计入失败。汇总相应改为「成功 X / 跳过 Y / 失败 Z」
+  （CLI 与 GUI 一致）。
+
+### 修复
+
+- **下载支持断点续传**：`download()` 中途出错时**保留 `.tmp`**，重试带 `Range` 从断点
+  接着下，不再从 0 重来。此前遇到云盘「冷节点」（尤其服务端转好的 PDF 所在的
+  `s3.cldisk.com`：首次访问只吐一点数据就长时间停滞）会反复「下到卡点 → 读超时 →
+  清空重下 → 再卡」，永远下不完，界面上表现为「卡住」，最终报
+  `The read operation timed out`。现在首个卡点之后缓存变热，续传即可秒完。
+  服务端忽略 `Range`（照旧回 200）时自动回退整包重下；`416`（起点已到末尾）按下载完成处理。
+
 ## [1.1.1] - 2026-10-09
 
 ### 修复
@@ -58,6 +76,7 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.1.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Yum0Rin/cx-downloader/releases/tag/v1.0.0

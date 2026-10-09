@@ -564,7 +564,7 @@ class App(ctk.CTk):
         self.scan_key = ""
         self._fx_cookie_count = 0             # 本机 Firefox 里 chaoxing cookie 的条数
         self._scan_login_failed = False       # 本次扫描是否因登录态中断
-        self.total = self.done = self.ok = self.fail = 0
+        self.total = self.done = self.ok = self.fail = self.skip = 0
         self.t0 = 0.0
         self._last_mode = ""
 
@@ -1618,7 +1618,7 @@ class App(ctk.CTk):
 
         self.stop_evt.clear()
         self.total = len(job_list)
-        self.done = self.ok = self.fail = 0
+        self.done = self.ok = self.fail = self.skip = 0
         self.t0 = time.time()
         self._progress(0)
         self.lbl.configure(text=f"0 / {self.total}", text_color=pair("muted"))
@@ -1705,7 +1705,11 @@ class App(ctk.CTk):
         self.done += 1
         self._progress(self.done / max(1, self.total))
         self.lbl.configure(text=f"{self.done} / {self.total}")
-        if r["ok"]:
+        if r.get("skip"):
+            self.skip += 1
+            self.log(f"⏭ {r.get('filename') or r['objectid']}　"
+                     f"（跳过：{r.get('skip_reason', '不支持')}）", "dim")
+        elif r["ok"]:
             self.ok += 1
             extra = f"　({r['pagenum']} 页)" if r.get("pagenum") else ""
             self.log(f"✔ {r.get('filename')}{extra}", "ok")
@@ -1724,8 +1728,12 @@ class App(ctk.CTk):
             text=f"完成 {self.ok}/{self.total}",
             text_color=pair("primary") if self.fail else pair("text"),
         )
+        parts = f"成功 {self.ok}"
+        if self.skip:
+            parts += f" / 跳过 {self.skip}"
+        parts += f" / 失败 {self.fail}"
         self.log(
-            f"\n完成: 成功 {self.ok} / 失败 {self.fail}，耗时 {time.time() - self.t0:.1f}s", "head"
+            f"\n完成: {parts}，耗时 {time.time() - self.t0:.1f}s", "head"
         )
         self.log(f"目录: {os.path.abspath(self.outdir.get())}", "dim")
 
