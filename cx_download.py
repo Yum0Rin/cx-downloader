@@ -333,6 +333,7 @@ def process_one(
     timeout: int,
     overwrite: bool,
     name_hint: str | None = None,
+    fallback_original: bool = False,
 ) -> dict:
     res = {"objectid": oid, "ok": False, "files": [], "error": None, "skip": False}
     try:
@@ -355,19 +356,21 @@ def process_one(
                 # status 往往是 "failed"（那是「转码状态」，不是「能不能下」）。
                 # 直接把 download 存成 .pdf，别因为 status 就判死。
                 jobs.append((st["download"], os.path.join(outdir, pdf_name)))
+        if not jobs and _looks_like_video(st, ext):
+            # 视频任务点（mp4 等）不走文档这套接口，直接标为「跳过」，不算失败
+            res["skip"] = True
+            res["skip_reason"] = "视频，不支持"
+            return res
+        if not jobs and want_pdf and not want_original and st.get("download"):
+            # 「仅 PDF」模式下，csv/py/ipynb/npy/xlsx 这些格式服务端根本不转 PDF
+            # （status 里只有 download，没有 pdf），原件明明能下。
+            if fallback_original:
+                jobs.append((st["download"], os.path.join(outdir, fname)))
+            else:
+                res["skip"] = True
+                res["skip_reason"] = "该格式没有 PDF 版（可在选项里开「无 PDF 版时下原件」）"
+                return res
         if not jobs:
-            if _looks_like_video(st, ext):
-                # 视频任务点（mp4 等）不走文档这套接口，直接标为「跳过」，不算失败
-                res["skip"] = True
-                res["skip_reason"] = "视频，不支持"
-                return res
-            if want_pdf and not want_original and st.get("download"):
-                # 「仅 PDF」模式下，csv/py/ipynb/npy/exe 这些格式服务端根本不转 PDF
-                # （status 里只有 download，没有 pdf），原件明明能下。这不是失败，
-                # 是模式选窄了 —— 标「跳过」并提示换模式，别让人以为文件坏了。
-                res["skip"] = True
-                res["skip_reason"] = "该格式没有 PDF 版（改用「原件+PDF」或「仅原件」）"
-                return res
             if status and status != "success":
                 raise RuntimeError(f"接口返回 status={status!r}，且没给出可下载地址")
             raise RuntimeError("接口未返回可下载地址（download/pdf 都为空）")
@@ -1027,6 +1030,8 @@ def main() -> int:
     p.add_argument("-o", "--out", default="cx_download", help="保存目录（默认 ./cx_download）")
     p.add_argument("--pdf", action="store_true", help="额外下载 PDF")
     p.add_argument("--pdf-only", action="store_true", help="只下载 PDF")
+    p.add_argument("--pdf-fallback", action="store_true",
+                   help="配合 --pdf-only：没有 PDF 版的格式（csv/py/xlsx…）改下原件")
     p.add_argument("--jobs", type=int, default=4, help="并发数（默认 4）")
     p.add_argument("--cookie", default=os.environ.get("CX_COOKIE"), help="可选 Cookie")
     p.add_argument("--overwrite", action="store_true", help="强制重下已存在的文件")
@@ -1095,7 +1100,10 @@ def main() -> int:
     want_pdf = args.pdf or args.pdf_only
 
     log(f"\n共 {len(jobs)} 个文件")
-    log(f"模式: {'仅PDF' if args.pdf_only else ('原件+PDF' if args.pdf else '仅原件')}, 并发 {args.jobs}\n")
+    mode_txt = "仅PDF" if args.pdf_only else ("原件+PDF" if args.pdf else "仅原件")
+    if args.pdf_only and args.pdf_fallback:
+        mode_txt += "（无 PDF 版时下原件）"
+    log(f"模式: {mode_txt}, 并发 {args.jobs}\n")
 
     ok = fail = skip = 0
     t0 = time.time()
@@ -1107,7 +1115,8 @@ def main() -> int:
                                 cookie, args.timeout, args.overwrite)
             else:
                 fut = ex.submit(process_one, payload, job_dir, want_original, want_pdf,
-                                cookie, args.timeout, args.overwrite, name_hint)
+                                cookie, args.timeout, args.overwrite, name_hint,
+                                args.pdf_fallback)
             futs[fut] = payload
         for fut in as_completed(futs):
             r = fut.result()

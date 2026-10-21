@@ -192,6 +192,13 @@ SKIP_HINT = (
     "靠 HTTP Range 只取 64KB，不用整包重下。\n\n"
     "关掉的话，同名文件一律重下覆盖。"
 )
+FALLBACK_HINT = (
+    "只在「仅 PDF」模式下起作用。\n\n"
+    "csv / py / ipynb / npy / xlsx 这类格式学习通不转 PDF，\n"
+    "「仅 PDF」模式本来一个都下不到。开了这个开关，这些文件改下原件，\n"
+    "能转 PDF 的照旧只给 PDF。\n\n"
+    "关掉的话，它们会被标成「跳过：该格式没有 PDF 版」。"
+)
 LEVELS_HINT = (
     "勾中哪一级，才会真的建对应的文件夹。\n"
     "拿「章节」里的一个文件举例，四级的取值是：\n\n"
@@ -543,6 +550,9 @@ class App(ctk.CTk):
         cfg = load_settings()
         self.outdir = ctk.StringVar(value=cfg.get("outdir") or DEFAULT_OUT)
         self.mode = ctk.StringVar(value=MODE_BY_VALUE.get(cfg.get("mode", "orig"), "仅原件"))
+        # 「仅 PDF」模式下，csv/py/xlsx 这类服务端不转码的格式默认连原件一起下，
+        # 否则它们只会被跳过、一个都拿不到。
+        self.pdf_fallback = ctk.BooleanVar(value=bool(cfg.get("pdf_fallback", True)))
         self.jobs = ctk.StringVar(value=str(cfg.get("jobs") or 4))
         self.auto_skip = ctk.BooleanVar(value=bool(cfg.get("auto_skip", True)))
         self.cookie = ctk.StringVar(value=cfg.get("cookie") or "")
@@ -774,6 +784,22 @@ class App(ctk.CTk):
         ).pack(side="left", padx=(0, 8))
         self.tg_mode = ToggleGroup(row, values=list(MODE_LABELS), variable=self.mode)
         self.tg_mode.pack(side="left")
+
+        # 单独一行：塞进「下载内容」那行会被左栏宽度挤掉，只剩个「无」字
+        row_fb = ctk.CTkFrame(card, fg_color="transparent")
+        row_fb.pack(fill="x", padx=14, pady=(0, 6))
+        ctk.CTkSwitch(
+            row_fb,
+            text="仅 PDF 时，无 PDF 版的格式也下原件",
+            variable=self.pdf_fallback,
+            font=ctk.CTkFont(FONT, 12),
+            text_color=pair("text"),
+            progress_color=pair("primary"),
+            fg_color=pair("input_border"),
+            button_color=("#FFFFFF", "#E4EAF0"),
+            button_hover_color=("#FFFFFF", "#FFFFFF"),
+        ).pack(side="left")
+        HintIcon(row_fb, FALLBACK_HINT).pack(side="left", padx=(6, 0))
 
         row2 = ctk.CTkFrame(card, fg_color="transparent")
         row2.pack(fill="x", padx=14, pady=(0, 6))
@@ -1637,6 +1663,7 @@ class App(ctk.CTk):
         mode = MODE_LABELS.get(self.mode.get(), "orig")
         want_original = mode in ("orig", "both")
         want_pdf = mode in ("pdf", "both")
+        pdf_fallback = bool(self.pdf_fallback.get())
         conc = max(1, int(self.jobs.get() or 4))
         auto_skip = bool(self.auto_skip.get())
         manual = self.cookie.get().strip()
@@ -1651,6 +1678,7 @@ class App(ctk.CTk):
                 "mode": mode,
                 "jobs": conc,
                 "auto_skip": auto_skip,
+                "pdf_fallback": pdf_fallback,
                 "cookie": self.cookie.get(),
                 "appearance": self.appearance.get(),
                 "levels": {
@@ -1677,7 +1705,8 @@ class App(ctk.CTk):
         self.log(f"模式: {self.mode.get()}　并发: {conc}", "dim")
         self.log(
             "登录态: " + ("手动 Cookie" if manual else ("Firefox Cookie" if cookie else "无"))
-            + ("" if want_original else "　(仅下载 PDF)"),
+            + ("" if want_original else "　(仅下载 PDF)")
+            + ("" if (want_original or not pdf_fallback) else "，无 PDF 版的下原件"),
             "dim",
         )
         if self.tasks and self.scan_key and self.scan_key != self._dir_key():
@@ -1690,12 +1719,12 @@ class App(ctk.CTk):
 
         self.worker = threading.Thread(
             target=self._run,
-            args=(job_list, want_original, want_pdf, cookie, conc),
+            args=(job_list, want_original, want_pdf, cookie, conc, pdf_fallback),
             daemon=True,
         )
         self.worker.start()
 
-    def _run(self, job_list, want_original, want_pdf, cookie, conc):
+    def _run(self, job_list, want_original, want_pdf, cookie, conc, pdf_fallback=False):
         with ThreadPoolExecutor(max_workers=conc) as ex:
             futs = {}
             for kind, payload, outdir, hint, overwrite in job_list:
@@ -1706,7 +1735,8 @@ class App(ctk.CTk):
                                     cookie, self.timeout, overwrite)
                 else:
                     fut = ex.submit(core.process_one, payload, outdir, want_original,
-                                    want_pdf, cookie, self.timeout, overwrite, hint)
+                                    want_pdf, cookie, self.timeout, overwrite, hint,
+                                    pdf_fallback)
                 futs[fut] = payload
             for fut in as_completed(futs):
                 self.q.put(("result", fut.result()))
