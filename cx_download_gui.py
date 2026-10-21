@@ -201,10 +201,14 @@ FALLBACK_HINT = (
 )
 VIDEO_HINT = (
     "视频任务点默认跳过：它没有 PDF，也不走文档那套接口。\n\n"
-    "打开后取学习通转好的 mp4（同一节课原件 .mov 可能 800MB+，\n"
-    "转码版通常几十 MB），落在章节目录下。\n\n"
-    "视频体积大，建议单独下一批，别和课件混在一次里。\n"
-    "CLI：--video（要原件加 --video-original）。"
+    "打开后可以选两种取法：\n\n"
+    "转码 mp4 —— 学习通服务端压好的版本，几十 MB，\n"
+    "  普通播放器直接能放；画质是被压过的（不是原件）。\n"
+    "  实测同一门课：原件 809.7MB → 转码 33.8MB，约 1/24。\n\n"
+    "原件 —— 老师上传的那份（.mov/.mp4），画质码率最好，\n"
+    "  但体积大得多（几百 MB 到 1GB），.mov 可能还要装解码器。\n\n"
+    "没有转码版的视频会自动退回原件。视频体积大，建议单独下一批。\n"
+    "CLI：--video（加 --video-original 取原件）。"
 )
 LEVELS_HINT = (
     "勾中哪一级，才会真的建对应的文件夹。\n"
@@ -222,6 +226,8 @@ LEVELS_HINT = (
 
 MODE_LABELS = {"仅原件": "orig", "原件 + PDF": "both", "仅 PDF": "pdf"}
 MODE_BY_VALUE = {v: k for k, v in MODE_LABELS.items()}
+# 视频两种取法：转码 mp4 是学习通压过的（几十 MB），原件是老师上传的那份（几百 MB）
+VIDEO_MODES = ("转码 mp4", "原件")
 CONCURRENCY = ["1", "2", "4", "6", "8", "12", "16"]
 
 # Win11 标题栏着色
@@ -585,6 +591,8 @@ class App(ctk.CTk):
         self.pdf_fallback = ctk.BooleanVar(value=bool(cfg.get("pdf_fallback", True)))
         # 视频任务点默认跳过（体积大、多数人只要课件）；开了就取转码 mp4
         self.video_dl = ctk.BooleanVar(value=bool(cfg.get("video", False)))
+        self.video_mode = ctk.StringVar(
+            value="原件" if cfg.get("video_original") else "转码 mp4")
         self.jobs = ctk.StringVar(value=str(cfg.get("jobs") or 4))
         self.auto_skip = ctk.BooleanVar(value=bool(cfg.get("auto_skip", True)))
         self.cookie = ctk.StringVar(value=cfg.get("cookie") or "")
@@ -832,10 +840,15 @@ class App(ctk.CTk):
             button_hover_color=("#FFFFFF", "#FFFFFF"),
         ).pack(side="left")
         HintIcon(row_fb, FALLBACK_HINT).pack(side="left", padx=(6, 12))
+
+        # 视频单独一行：开关 + 取法下拉，挤在上一行会被裁掉
+        row_vid = ctk.CTkFrame(card, fg_color="transparent")
+        row_vid.pack(fill="x", padx=14, pady=(0, 6))
         ctk.CTkSwitch(
-            row_fb,
+            row_vid,
             text="视频也下载",
             variable=self.video_dl,
+            command=self._on_video_toggle,
             font=ctk.CTkFont(FONT, 12),
             text_color=pair("text"),
             progress_color=pair("primary"),
@@ -843,7 +856,26 @@ class App(ctk.CTk):
             button_color=("#FFFFFF", "#E4EAF0"),
             button_hover_color=("#FFFFFF", "#FFFFFF"),
         ).pack(side="left")
-        HintIcon(row_fb, VIDEO_HINT).pack(side="left", padx=(6, 0))
+        HintIcon(row_vid, VIDEO_HINT).pack(side="left", padx=(6, 8))
+        # 视频要哪种：转码 mp4 体积小、能直接播；原件是老师传的那份，画质最好但大得多
+        self.om_video = ctk.CTkOptionMenu(
+            row_vid,
+            values=list(VIDEO_MODES),
+            variable=self.video_mode,
+            width=96,
+            height=28,
+            corner_radius=9,
+            font=ctk.CTkFont(FONT, 12),
+            fg_color=pair("secondary"),
+            button_color=pair("secondary_hover"),
+            button_hover_color=pair("border"),
+            text_color=pair("text"),
+            dropdown_fg_color=pair("card"),
+            dropdown_hover_color=pair("secondary"),
+            dropdown_text_color=pair("text"),
+            state="normal" if self.video_dl.get() else "disabled",
+        )
+        self.om_video.pack(side="left")
 
         row2 = ctk.CTkFrame(card, fg_color="transparent")
         row2.pack(fill="x", padx=14, pady=(0, 6))
@@ -1462,6 +1494,11 @@ class App(ctk.CTk):
         return (bool(self.lv_course.get()), bool(self.lv_source.get()),
                 bool(self.lv_unit.get()), bool(self.lv_chapter.get()))
 
+    def _on_video_toggle(self):
+        """没开视频下载时，转码/原件那个下拉没意义，灰掉。"""
+        if hasattr(self, "om_video"):
+            self.om_video.configure(state="normal" if self.video_dl.get() else "disabled")
+
     def _update_preview(self):
         """把当前层级拼出来的样子显示出来（拿列表第一项举例，没有就用样例）。"""
         if not hasattr(self, "lbl_preview"):
@@ -1717,6 +1754,7 @@ class App(ctk.CTk):
         want_pdf = mode in ("pdf", "both")
         pdf_fallback = bool(self.pdf_fallback.get())
         video_dl = bool(self.video_dl.get())
+        video_original = video_dl and self.video_mode.get() == "原件"
         conc = max(1, int(self.jobs.get() or 4))
         auto_skip = bool(self.auto_skip.get())
         manual = self.cookie.get().strip()
@@ -1733,6 +1771,7 @@ class App(ctk.CTk):
                 "auto_skip": auto_skip,
                 "pdf_fallback": pdf_fallback,
                 "video": video_dl,
+                "video_original": video_original,
                 "cookie": self.cookie.get(),
                 "appearance": self.appearance.get(),
                 "levels": {
@@ -1773,13 +1812,14 @@ class App(ctk.CTk):
 
         self.worker = threading.Thread(
             target=self._run,
-            args=(job_list, want_original, want_pdf, cookie, conc, pdf_fallback, video_dl),
+            args=(job_list, want_original, want_pdf, cookie, conc,
+                  pdf_fallback, video_dl, video_original),
             daemon=True,
         )
         self.worker.start()
 
     def _run(self, job_list, want_original, want_pdf, cookie, conc,
-             pdf_fallback=False, video_dl=False):
+             pdf_fallback=False, video_dl=False, video_original=False):
         with ThreadPoolExecutor(max_workers=conc) as ex:
             futs = {}
             for kind, payload, outdir, hint, overwrite in job_list:
@@ -1791,7 +1831,7 @@ class App(ctk.CTk):
                 else:
                     fut = ex.submit(core.process_one, payload, outdir, want_original,
                                     want_pdf, cookie, self.timeout, overwrite, hint,
-                                    pdf_fallback, video_dl)
+                                    pdf_fallback, video_dl, video_original)
                 futs[fut] = payload
             for fut in as_completed(futs):
                 self.q.put(("result", fut.result()))

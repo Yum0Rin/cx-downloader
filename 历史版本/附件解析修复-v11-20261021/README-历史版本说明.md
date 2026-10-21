@@ -34,7 +34,8 @@
     默认改下原件（`fallback_original` 开关，默认开）；关掉则标「跳过」，不再算失败；
     PDF 直链 404 时给「云盘没生成转码，换原件模式」的提示。
   - 新增视频下载：视频任务点的 `http` 是转码 mp4、`download` 是原件，`want_video`
-    打开后取 mp4（`video_original` 取原件）。
+    打开后按 `video_original` 取其一（GUI 下拉「转码 mp4 / 原件」，CLI `--video[-original]`）；
+    没有转码版时自动退回原件。
   - `resolve_course_files()` 重写查重路径：同时看「原件名 / `.pdf`」两种候选，
     支持 `dir_of` 按层级算落点目录，命中 PDF 时拿 `pdf` 地址比内容；
     以前只看课程根目录 + 原名，导致重扫全标「新文件」、自动跳过失效。
