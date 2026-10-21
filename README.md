@@ -137,6 +137,8 @@ install -Dm644 app_preview.png ~/.local/share/pixmaps/cx-downloader.png   # 可�
    - **下载内容**：仅原件 / 原件+PDF / 仅 PDF —— 原件是老师传的 pptx/docx/pdf，PDF 是学习通转好的预览版；
    - **仅 PDF 时，无 PDF 版的格式也下原件**：csv / py / ipynb / npy / xlsx 这些格式学习通不转 PDF，
      选「仅 PDF」时本来一个都下不到；开着这个开关它们就下原件（默认开）；
+   - **视频也下载**：视频任务点默认跳过；打开后取学习通转好的 mp4（原件 `.mov` 可能 800MB+，
+     转码版通常几十 MB）。视频体积大，建议单独下一批；
    - **并发数**：同时下几个，默认 4，网络差就调小；
    - **自动跳过相同文件**：建议勾上，已下过且内容相同的会跳过；
    - **Cookie**：留空自动读 Firefox，读不到再手贴；
@@ -172,6 +174,9 @@ python cx_download.py <课程链接> --no-data
 --pdf / --pdf-only
 --jobs N         并发数（默认 4）
 --cookie STR     手动指定 Cookie（默认自动读 Firefox）
+--pdf-fallback   配合 --pdf-only：没有 PDF 版的格式改下原件
+--video          视频任务点也下载（默认取转码 mp4）
+--video-original 配合 --video：下原件而不是转码 mp4
 --overwrite      强制重下已存在的文件
 --timeout N      单请求超时秒数（默认 60）
 ```

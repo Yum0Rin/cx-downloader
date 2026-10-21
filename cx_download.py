@@ -334,6 +334,8 @@ def process_one(
     overwrite: bool,
     name_hint: str | None = None,
     fallback_original: bool = False,
+    want_video: bool = False,
+    video_original: bool = False,
 ) -> dict:
     res = {"objectid": oid, "ok": False, "files": [], "error": None, "skip": False}
     try:
@@ -345,21 +347,31 @@ def process_one(
         res["filename"] = fname   # 失败时也要带出文件名，别只甩 objectid
 
         jobs: list[tuple[str, str]] = []
-        if want_original and st.get("download"):
-            jobs.append((st["download"], os.path.join(outdir, fname)))
-        if want_pdf:
-            pdf_name = (sanitize(stem, oid) or oid) + ".pdf"
-            if st.get("pdf"):
-                jobs.append((st["pdf"], os.path.join(outdir, pdf_name)))
-            elif ext.lower() == ".pdf" and st.get("download"):
-                # 原件本身就是 PDF：服务端不做转码，所以没有 pdf 字段，
-                # status 往往是 "failed"（那是「转码状态」，不是「能不能下」）。
-                # 直接把 download 存成 .pdf，别因为 status 就判死。
-                jobs.append((st["download"], os.path.join(outdir, pdf_name)))
+        if _looks_like_video(st, ext) and want_video:
+            # 视频任务点不走文档那套：`http` 是转码好的 mp4（几十 MB），
+            # `download` 是原件（.mov 能到 800MB+）。默认拿转码，够看且省空间。
+            if video_original and st.get("download"):
+                jobs.append((st["download"], os.path.join(outdir, fname)))
+            elif st.get("http"):
+                jobs.append((st["http"], os.path.join(outdir, stem + ".mp4")))
+            elif st.get("download"):
+                jobs.append((st["download"], os.path.join(outdir, fname)))
+        else:
+            if want_original and st.get("download"):
+                jobs.append((st["download"], os.path.join(outdir, fname)))
+            if want_pdf:
+                pdf_name = (sanitize(stem, oid) or oid) + ".pdf"
+                if st.get("pdf"):
+                    jobs.append((st["pdf"], os.path.join(outdir, pdf_name)))
+                elif ext.lower() == ".pdf" and st.get("download"):
+                    # 原件本身就是 PDF：服务端不做转码，所以没有 pdf 字段，
+                    # status 往往是 "failed"（那是「转码状态」，不是「能不能下」）。
+                    # 直接把 download 存成 .pdf，别因为 status 就判死。
+                    jobs.append((st["download"], os.path.join(outdir, pdf_name)))
         if not jobs and _looks_like_video(st, ext):
             # 视频任务点（mp4 等）不走文档这套接口，直接标为「跳过」，不算失败
             res["skip"] = True
-            res["skip_reason"] = "视频，不支持"
+            res["skip_reason"] = "视频（选项里可开「视频也下载」）"
             return res
         if not jobs and want_pdf and not want_original and st.get("download"):
             # 「仅 PDF」模式下，csv/py/ipynb/npy/xlsx 这些格式服务端根本不转 PDF
@@ -822,20 +834,49 @@ def compare_with_remote(cookie: str | None, oid: str, path: str,
     return same, (total or length)
 
 
+def compare_pdf_with_remote(cookie: str | None, oid: str, path: str,
+                            timeout: int = 60) -> tuple[bool, int | None]:
+    """同上，但比的是「转码 PDF」。本地那份是 .pdf 时不能拿原件去比 —— 字节数根本不同。"""
+    st = fetch_status(oid, cookie, timeout)
+    url = st.get("pdf")
+    if not url:
+        return False, st.get("length")
+    try:
+        same, total = compare_url_with_local(cookie, url, path, timeout)
+    except Exception:  # noqa: BLE001
+        return False, st.get("length")
+    return same, total
+
+
 def resolve_course_files(cookie: str | None, files: list[dict], outdir: str,
                          timeout: int = 60, progress=None,
-                         workers: int = 6) -> list[dict]:
+                         workers: int = 6, want_pdf_only: bool = False,
+                         dir_of=None) -> list[dict]:
     """给扫描结果补上「落到哪个路径 / 本地是否已有 / 是否同一份」。
 
     只有本地**已经存在同名文件**时才会去请求服务端比对，全新文件零额外请求。
+
+    want_pdf_only 要跟下载模式对上：「仅 PDF」时落盘名是 `<stem>.pdf`，
+    查重还按原名去找就永远是「新文件」（踩过）。所以两种候选都看一遍。
+    dir_of(f) 用来算每项真正的落点目录（按目录层级拼出来的分组/章节目录），
+    不传就一律用 outdir —— 传错会「明明下过却全标新文件」。
     """
     pending: list[dict] = []
     for f in files:
-        f["outdir"] = outdir
+        folder = dir_of(f) if dir_of else outdir
+        f["outdir"] = folder
         key = f.get("objectid") or f.get("dataid") or "file"
-        f["target"] = predict_name(f.get("name") or "", key)
-        f["path"] = os.path.join(outdir, f["target"]) if f["target"] else ""
-        f["exists"] = bool(f["path"]) and os.path.exists(f["path"])
+        name = f.get("name") or ""
+        stem, _ = split_ext(name)
+        orig_name = predict_name(name, key)          # 原件名（名字没扩展名时是 None）
+        pdf_name = (sanitize(stem, key) or key) + ".pdf" if name else None
+        order = [pdf_name, orig_name] if want_pdf_only else [orig_name, pdf_name]
+        hit = next((t for t in order if t and os.path.exists(os.path.join(folder, t))), None)
+        f["target"] = hit or next((t for t in order if t), None)
+        f["path"] = os.path.join(folder, f["target"]) if f["target"] else ""
+        f["exists"] = hit is not None
+        # 命中的是不是 PDF 转码，决定拿哪个远端地址比内容
+        f["_is_pdf"] = bool(hit and hit == pdf_name and hit != orig_name)
         f["same"] = None
         f["length"] = None
         if f["exists"]:
@@ -848,6 +889,8 @@ def resolve_course_files(cookie: str | None, files: list[dict], outdir: str,
         # 「资料」页的文件没有 objectid，只有直链，走 URL 版比对
         if f.get("url"):
             return compare_url_with_local(cookie, f["url"], f["path"], timeout)
+        if f.get("_is_pdf"):
+            return compare_pdf_with_remote(cookie, f["objectid"], f["path"], timeout)
         return compare_with_remote(cookie, f["objectid"], f["path"], timeout)
 
     done = 0
@@ -1032,6 +1075,10 @@ def main() -> int:
     p.add_argument("--pdf-only", action="store_true", help="只下载 PDF")
     p.add_argument("--pdf-fallback", action="store_true",
                    help="配合 --pdf-only：没有 PDF 版的格式（csv/py/xlsx…）改下原件")
+    p.add_argument("--video", action="store_true",
+                   help="视频任务点也下载（默认取转码好的 mp4，几十 MB）")
+    p.add_argument("--video-original", action="store_true",
+                   help="配合 --video：下原件而不是转码 mp4（动辄几百 MB）")
     p.add_argument("--jobs", type=int, default=4, help="并发数（默认 4）")
     p.add_argument("--cookie", default=os.environ.get("CX_COOKIE"), help="可选 Cookie")
     p.add_argument("--overwrite", action="store_true", help="强制重下已存在的文件")
@@ -1116,7 +1163,7 @@ def main() -> int:
             else:
                 fut = ex.submit(process_one, payload, job_dir, want_original, want_pdf,
                                 cookie, args.timeout, args.overwrite, name_hint,
-                                args.pdf_fallback)
+                                args.pdf_fallback, args.video, args.video_original)
             futs[fut] = payload
         for fut in as_completed(futs):
             r = fut.result()

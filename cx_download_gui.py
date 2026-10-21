@@ -199,6 +199,13 @@ FALLBACK_HINT = (
     "能转 PDF 的照旧只给 PDF。\n\n"
     "关掉的话，它们会被标成「跳过：该格式没有 PDF 版」。"
 )
+VIDEO_HINT = (
+    "视频任务点默认跳过：它没有 PDF，也不走文档那套接口。\n\n"
+    "打开后取学习通转好的 mp4（同一节课原件 .mov 可能 800MB+，\n"
+    "转码版通常几十 MB），落在章节目录下。\n\n"
+    "视频体积大，建议单独下一批，别和课件混在一次里。\n"
+    "CLI：--video（要原件加 --video-original）。"
+)
 LEVELS_HINT = (
     "勾中哪一级，才会真的建对应的文件夹。\n"
     "拿「章节」里的一个文件举例，四级的取值是：\n\n"
@@ -307,6 +314,29 @@ def elide_mid(text: str, limit: int) -> str:
         tail.append(ch)
         w += cw
     return "".join(head) + "…" + "".join(reversed(tail))
+
+
+def course_path(base: str, subdir: str, group: str, unit: str, chapter: str,
+                lv: tuple[bool, bool, bool, bool]) -> str:
+    """按层级勾选拼落点目录（课程名 / 来源 / 分组 / 章节名）。
+
+    单独拎出来是为了让扫描线程算查重路径时也用同一套规则 —— 之前扫描只按课程目录找，
+    文件实际落在「分组/章节」子目录里，于是明明下过也全标「新文件」。
+    """
+    parts: list[str] = []
+    if lv[0] and subdir:
+        parts.append(subdir)
+    if lv[1] and group:
+        parts.append(core.sanitize(group, "其他"))
+    if lv[2] and unit:
+        parts.append(core.sanitize(unit, "分组"))
+    if lv[3] and chapter:
+        # 「资料」的 chapter 可能是多级文件夹路径（"a / b"），逐级建
+        for seg in str(chapter).split(" / "):
+            seg = core.sanitize(seg, "")
+            if seg:
+                parts.append(seg)
+    return os.path.join(base, *parts) if parts else base
 
 
 def build_label(unit: str, chapter: str, name: str, limit: int = 74) -> str:
@@ -553,6 +583,8 @@ class App(ctk.CTk):
         # 「仅 PDF」模式下，csv/py/xlsx 这类服务端不转码的格式默认连原件一起下，
         # 否则它们只会被跳过、一个都拿不到。
         self.pdf_fallback = ctk.BooleanVar(value=bool(cfg.get("pdf_fallback", True)))
+        # 视频任务点默认跳过（体积大、多数人只要课件）；开了就取转码 mp4
+        self.video_dl = ctk.BooleanVar(value=bool(cfg.get("video", False)))
         self.jobs = ctk.StringVar(value=str(cfg.get("jobs") or 4))
         self.auto_skip = ctk.BooleanVar(value=bool(cfg.get("auto_skip", True)))
         self.cookie = ctk.StringVar(value=cfg.get("cookie") or "")
@@ -790,7 +822,7 @@ class App(ctk.CTk):
         row_fb.pack(fill="x", padx=14, pady=(0, 6))
         ctk.CTkSwitch(
             row_fb,
-            text="仅 PDF 时，无 PDF 版的格式也下原件",
+            text="无 PDF 版时下原件",
             variable=self.pdf_fallback,
             font=ctk.CTkFont(FONT, 12),
             text_color=pair("text"),
@@ -799,7 +831,19 @@ class App(ctk.CTk):
             button_color=("#FFFFFF", "#E4EAF0"),
             button_hover_color=("#FFFFFF", "#FFFFFF"),
         ).pack(side="left")
-        HintIcon(row_fb, FALLBACK_HINT).pack(side="left", padx=(6, 0))
+        HintIcon(row_fb, FALLBACK_HINT).pack(side="left", padx=(6, 12))
+        ctk.CTkSwitch(
+            row_fb,
+            text="视频也下载",
+            variable=self.video_dl,
+            font=ctk.CTkFont(FONT, 12),
+            text_color=pair("text"),
+            progress_color=pair("primary"),
+            fg_color=pair("input_border"),
+            button_color=("#FFFFFF", "#E4EAF0"),
+            button_hover_color=("#FFFFFF", "#FFFFFF"),
+        ).pack(side="left")
+        HintIcon(row_fb, VIDEO_HINT).pack(side="left", padx=(6, 0))
 
         row2 = ctk.CTkFrame(card, fg_color="transparent")
         row2.pack(fill="x", padx=14, pady=(0, 6))
@@ -1404,24 +1448,19 @@ class App(ctk.CTk):
         )
 
     def _dir_key(self) -> str:
-        return f"{os.path.abspath(self.outdir.get())}|{self._levels_on()}"
+        # 下载模式也进 key：「仅 PDF」落的是 .pdf，跟原件模式查重结果不能混用
+        return (f"{os.path.abspath(self.outdir.get())}|{self._levels_on()}"
+                f"|{MODE_LABELS.get(self.mode.get(), 'orig')}")
 
     def _job_dir(self, base: str, t: dict) -> str:
         """按勾选的层级拼出这一项的落点目录。勾中哪级才建哪级。"""
-        parts: list[str] = []
-        if self.lv_course.get() and t.get("subdir"):
-            parts.append(t["subdir"])
-        if self.lv_source.get() and t.get("group"):
-            parts.append(core.sanitize(t["group"], "其他"))
-        if self.lv_unit.get() and t.get("unit"):
-            parts.append(core.sanitize(t["unit"], "分组"))
-        if self.lv_chapter.get() and t.get("chapter"):
-            # 「资料」的 chapter 可能是多级文件夹路径（"a / b"），逐级建
-            for seg in str(t["chapter"]).split(" / "):
-                seg = core.sanitize(seg, "")
-                if seg:
-                    parts.append(seg)
-        return os.path.join(base, *parts) if parts else base
+        return course_path(base, t.get("subdir"), t.get("group"),
+                           t.get("unit"), t.get("chapter"), self._lv_flags())
+
+    def _lv_flags(self) -> tuple[bool, bool, bool, bool]:
+        """层级勾选（主线程取好再传进扫描线程，别在子线程碰 Tk 变量）。"""
+        return (bool(self.lv_course.get()), bool(self.lv_source.get()),
+                bool(self.lv_unit.get()), bool(self.lv_chapter.get()))
 
     def _update_preview(self):
         """把当前层级拼出来的样子显示出来（拿列表第一项举例，没有就用样例）。"""
@@ -1519,11 +1558,16 @@ class App(ctk.CTk):
         self.log(f"登录态: {src}", "dim")
 
         self.scan_worker = threading.Thread(
-            target=self._run_scan, args=(urls, oids, cookie, base), daemon=True
+            target=self._run_scan,
+            args=(urls, oids, cookie, base,
+                  MODE_LABELS.get(self.mode.get(), "orig") == "pdf",
+                  self._lv_flags()),
+            daemon=True,
         )
         self.scan_worker.start()
 
-    def _run_scan(self, urls, oids, cookie, base):
+    def _run_scan(self, urls, oids, cookie, base, pdf_only=False,
+                  lv=(True, False, False, False)):
         def say(msg, tag="dim"):
             self.q.put(("scan_log", (msg, tag)))
 
@@ -1553,8 +1597,12 @@ class App(ctk.CTk):
                 try:
                     sc = core.scan_course(cookie, u, self.timeout, progress=lambda m: say(m))
                     say(f"章节任务点：{len(sc['files'])} 个")
-                    core.resolve_course_files(cookie, sc["files"], outdir,
-                                              self.timeout, progress=lambda m: say(m))
+                    core.resolve_course_files(
+                        cookie, sc["files"], outdir, self.timeout,
+                        progress=lambda m: say(m), want_pdf_only=pdf_only,
+                        dir_of=lambda f: course_path(
+                            base, subdir, f.get("source") or "",
+                            f.get("unit") or "", f.get("chapter") or "", lv))
                     self.q.put(("scan_files", (name, subdir, sc["files"])))
                 except core.LoginRequired:
                     self.q.put(("need_login", None))
@@ -1567,8 +1615,12 @@ class App(ctk.CTk):
                         cookie, info["courseid"], info["clazzid"], info["cpi"],
                         self.timeout, progress=lambda m: say(m))
                     say(f"课程资料：{len(dfiles)} 个")
-                    core.resolve_course_files(cookie, dfiles, outdir,
-                                              self.timeout, progress=lambda m: say(m))
+                    core.resolve_course_files(
+                        cookie, dfiles, outdir, self.timeout,
+                        progress=lambda m: say(m), want_pdf_only=pdf_only,
+                        dir_of=lambda f: course_path(
+                            base, subdir, f.get("source") or "",
+                            f.get("unit") or "", f.get("chapter") or "", lv))
                     self.q.put(("scan_files", (name, subdir, dfiles)))
                 except core.LoginRequired:
                     self.q.put(("need_login", None))
@@ -1664,6 +1716,7 @@ class App(ctk.CTk):
         want_original = mode in ("orig", "both")
         want_pdf = mode in ("pdf", "both")
         pdf_fallback = bool(self.pdf_fallback.get())
+        video_dl = bool(self.video_dl.get())
         conc = max(1, int(self.jobs.get() or 4))
         auto_skip = bool(self.auto_skip.get())
         manual = self.cookie.get().strip()
@@ -1679,6 +1732,7 @@ class App(ctk.CTk):
                 "jobs": conc,
                 "auto_skip": auto_skip,
                 "pdf_fallback": pdf_fallback,
+                "video": video_dl,
                 "cookie": self.cookie.get(),
                 "appearance": self.appearance.get(),
                 "levels": {
@@ -1719,12 +1773,13 @@ class App(ctk.CTk):
 
         self.worker = threading.Thread(
             target=self._run,
-            args=(job_list, want_original, want_pdf, cookie, conc, pdf_fallback),
+            args=(job_list, want_original, want_pdf, cookie, conc, pdf_fallback, video_dl),
             daemon=True,
         )
         self.worker.start()
 
-    def _run(self, job_list, want_original, want_pdf, cookie, conc, pdf_fallback=False):
+    def _run(self, job_list, want_original, want_pdf, cookie, conc,
+             pdf_fallback=False, video_dl=False):
         with ThreadPoolExecutor(max_workers=conc) as ex:
             futs = {}
             for kind, payload, outdir, hint, overwrite in job_list:
@@ -1736,7 +1791,7 @@ class App(ctk.CTk):
                 else:
                     fut = ex.submit(core.process_one, payload, outdir, want_original,
                                     want_pdf, cookie, self.timeout, overwrite, hint,
-                                    pdf_fallback)
+                                    pdf_fallback, video_dl)
                 futs[fut] = payload
             for fut in as_completed(futs):
                 self.q.put(("result", fut.result()))
