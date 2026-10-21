@@ -166,7 +166,9 @@ COOKIE_HINT = (
     "4. 在 Request Headers 里找到 Cookie: 那一整行，全选复制\n"
     "5. 回来点「粘贴」，再重新扫描\n\n"
     "注意：Cookie 会过期，过一阵要重新弄一次。\n"
-    "装了 Firefox 的话不用管这个 —— 工具会自动读它的登录态。"
+    "装了 Firefox 的话不用管这个 —— 工具会自动读它的登录态。\n\n"
+    "手动 Cookie 优先于 Firefox。浏览器里换了账号，就点「换号」清掉它再扫；\n"
+    "下面那行会显示当前账号姓名，扫出来的东西不对时先看是不是号不对。"
 )
 LOGIN_HELP = (
     "扫描课程要证明「你有权限看这门课」。\n"
@@ -563,6 +565,8 @@ class App(ctk.CTk):
         # 本次扫描时的「保存目录 + 层级勾选」，用来判断查重结果是否还有效
         self.scan_key = ""
         self._fx_cookie_count = 0             # 本机 Firefox 里 chaoxing cookie 的条数
+        self._account_name = ""               # 当前登录态对应的账号姓名（取不到就是空）
+        self._account_pending = False         # 是否已有一个取账号名的后台请求在跑
         self._scan_login_failed = False       # 本次扫描是否因登录态中断
         self.total = self.done = self.ok = self.fail = self.skip = 0
         self.t0 = 0.0
@@ -576,6 +580,7 @@ class App(ctk.CTk):
         self._refresh_firefox_cookies()
         self._update_auth_label()
         self.cookie.trace_add("write", lambda *_: self._update_auth_label())
+        self.after(300, self._fetch_account_name_async)
         self.after(100, self._drain)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -827,6 +832,7 @@ class App(ctk.CTk):
             font=ctk.CTkFont(FONT, 12),
         ).pack(side="left", fill="x", expand=True)
         self._btn(row3, "粘贴", self.paste_cookie, width=56).pack(side="left", padx=(6, 0))
+        self._btn(row3, "换号", self.switch_account, width=56).pack(side="left", padx=(6, 0))
 
         self.lbl_auth = ctk.CTkLabel(
             card, text="", anchor="w", height=16,
@@ -1224,6 +1230,8 @@ class App(ctk.CTk):
             return
         self.cookie.set(text)
         self.log(f"已填入手动 Cookie（{len(text)} 字符）", "ok")
+        self._account_name = ""
+        self._fetch_account_name_async()
         if close_dialog is not None:
             close_dialog.destroy()
 
@@ -1236,11 +1244,12 @@ class App(ctk.CTk):
     def _update_auth_label(self):
         if not hasattr(self, "lbl_auth"):
             return
+        who = f" · 账号 {self._account_name}" if self._account_name else ""
         manual = self.cookie.get().strip()
         if manual:
-            txt, color = f"登录态：手动 Cookie（{len(manual)} 字符）", pair("ok")
+            txt, color = f"登录态：手动 Cookie（{len(manual)} 字符）{who}", pair("ok")
         elif self._fx_cookie_count:
-            txt = f"登录态：本机 Firefox（{self._fx_cookie_count} 条 chaoxing cookie）"
+            txt = (f"登录态：本机 Firefox（{self._fx_cookie_count} 条 chaoxing cookie）{who}")
             color = pair("ok")
         else:
             txt = "登录态：无 —— 扫描会拿到登录页，点左边 ⓘ 看怎么弄"
@@ -1253,6 +1262,43 @@ class App(ctk.CTk):
             self._fx_cookie_count = len(rows)
         except Exception:  # noqa: BLE001
             self._fx_cookie_count = 0
+
+    def _fetch_account_name_async(self):
+        """后台问一句「当前登录态是哪个号」，回来再更新标签。
+
+        手动 Cookie 和 Firefox 登录态可能不是同一个账号，界面上不报名字就分不清，
+        扫出来东西不对时很容易误判成「老师没传」。
+        """
+        cookie, _ = self._resolve_cookie()
+        if not cookie:
+            self._account_name = ""
+            self._update_auth_label()
+            return
+        if self._account_pending:
+            return
+        self._account_pending = True
+
+        def work():
+            try:
+                name = core.fetch_account_name(cookie, 12)
+            except Exception:  # noqa: BLE001
+                name = ""
+            self.q.put(("account", name))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def switch_account(self):
+        """换号：清掉手动 Cookie，回到读 Firefox，再重新确认账号名。"""
+        had_manual = bool(self.cookie.get().strip())
+        self.cookie.set("")
+        self._account_name = ""
+        self._refresh_firefox_cookies()
+        self._update_auth_label()
+        if had_manual:
+            self.log("已清空手动 Cookie，改用本机 Firefox 登录态", "dim")
+        if not self._fx_cookie_count:
+            self.log("本机没读到学习通 Cookie —— 请先在 Firefox 里登录，或点「粘贴」填新的", "err")
+        self._fetch_account_name_async()
 
     def _show_login_help(self):
         """没登录态时的引导弹窗。"""
@@ -1680,10 +1726,15 @@ class App(ctk.CTk):
                     self._finish()
                 elif kind == "scan_log":
                     self.log(payload[0], payload[1])
+                elif kind == "account":
+                    self._account_pending = False
+                    self._account_name = payload or ""
+                    self._update_auth_label()
                 elif kind == "scan_files":
                     self._on_scan_files(*payload)
                 elif kind == "need_login":
                     self._scan_login_failed = True
+                    self._account_name = ""          # 登录态已经失效，别再挂着旧名字
                     self.log("登录态失效 —— 服务器返回的是登录页，已弹出获取说明", "err")
                     self._refresh_firefox_cookies()
                     self._update_auth_label()

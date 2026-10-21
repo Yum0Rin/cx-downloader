@@ -2,6 +2,27 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-10-21
+
+### 修复
+
+- **章节附件大面积漏抓（只认出 16/99）**：学习通改版后，同一份附件有三种 HTML 写法 ——
+  老的 `class="ans-attach-online"`、新的 `class="ans-attach-ct"` 里套 `downloadfile` iframe、
+  以及编辑器里插进正文的 `ans-insertdoc-retract`。旧代码按 class 名抓标签，只认第一种，
+  于是文档类（pdf/docx/pptx/ipynb/csv/xlsx）几乎全丢，视频章因为还用老模板反而没丢 ——
+  表现为「文档全没了、视频还在」，很容易被当成老师没传。
+  现在改成扫所有带 `data="{...objectid...}"` 的标签再解析 JSON，三种写法一次覆盖，
+  按 objectid 去重。实测同一门课 42 章：修复前 16 个，修复后 99 个，与课程门户
+  「教学资源」条目数一致。详见 `docs/问题记录/2026-10-21-章节附件漏抓.md`。
+
+### 新增
+
+- **登录态显示当前账号姓名**：手动 Cookie 优先于 Firefox 登录态，换了账号却看不出来时，
+  很容易把「扫到的不是这门课」误判成课程本身没资料。现在登录态那行会带上「· 账号 某某」
+  （后台取，取不到就留空，不影响扫描）。
+- **「换号」按钮**：一键清空手动 Cookie、重读 Firefox 的 `cookies.sqlite`、重新确认账号名。
+  浏览器里换号后点它即可，不用再手删 Cookie。
+
 ## [1.1.2] - 2026-10-09
 
 ### 变更
@@ -76,6 +97,7 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.2.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.0.0...v1.1.0

@@ -34,7 +34,26 @@ DEFAULT_OIDS = [
 REQUIRED_CORE_ATTRS = [
     "process_one", "fetch_status", "extract_objectids",
     "scan_course", "scan_course_data", "download_data_one",
+    "parse_attachments", "fetch_account_name",
 ]
+
+# 章节页附件解析的回归样例：学习通现网三种写法混排（objectid 是占位值）。
+# 第一、二条是同一个 objectid 的重复 data（新版外层容器 + 内层 iframe 各带一份），
+# 必须只算一个 —— 老代码按 class 名抓，这里会 1 条都抓不到。
+CARD_SAMPLE = (
+    '<div class="ans-attach-ct"><iframe class="downloadfile" data="{&quot;objectid&quot;:'
+    '&quot;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&quot;,&quot;name&quot;:&quot;课件.docx&quot;,'
+    '&quot;type&quot;:&quot;.docx&quot;,&quot;hsize&quot;:&quot;1.00 MB&quot;}"></iframe></div>'
+    '<div class="ans-attach-ct"><iframe class="downloadfile" data="{&quot;objectid&quot;:'
+    '&quot;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&quot;,&quot;name&quot;:&quot;课件.docx&quot;}">'
+    '</iframe></div>'
+    '<iframe class="ans-attach-online" data="{&quot;objectid&quot;:'
+    '&quot;bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&quot;,&quot;name&quot;:&quot;视频.mp4&quot;,'
+    '&quot;type&quot;:&quot;.mp4&quot;}"></iframe>'
+    '<iframe class="ans-module ans-insertdoc-retract" module="insertdoc" data="{&quot;objectid&quot;:'
+    '&quot;cccccccccccccccccccccccccccccccc&quot;,&quot;name&quot;:&quot;大纲.docx&quot;,'
+    '&quot;type&quot;:&quot;.docx&quot;}"></iframe>'
+)
 
 DEFAULT_REPORT = os.path.join(tempfile.gettempdir(), "cx_download_selftest.txt")
 
@@ -112,6 +131,22 @@ def _check_bundle(rep: Report):
         rep.bad(f"import cx_download_gui 失败: {e!r}")
 
 
+def _check_parser(rep: Report):
+    """② 附件解析（脱网）：三种模板写法都要能抓出来，重复的 data 只算一次。"""
+    import cx_download as core  # noqa: PLC0415
+
+    try:
+        got = core.parse_attachments(CARD_SAMPLE)
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"parse_attachments 抛异常: {e!r}")
+        return
+    names = [x["name"] for x in got]
+    if len(got) == 3 and "课件.docx" in names and "视频.mp4" in names and "大纲.docx" in names:
+        rep.ok(f"附件解析三种模板都命中，去重后 {len(got)} 条")
+    else:
+        rep.bad(f"附件解析异常：期望 3 条（课件/视频/大纲），实际 {len(got)} 条 {names}")
+
+
 def _check_network(rep: Report, objectids: list[str], timeout: int = 60):
     """② 联网 + 写盘：HTTPS 走系统证书库，冻结后不一定还灵，必须实测。"""
     import cx_download as core  # noqa: PLC0415
@@ -158,6 +193,7 @@ def run(objectids: list[str] | None = None, network: bool = True,
     rep.info("=" * 60)
 
     _check_bundle(rep)
+    _check_parser(rep)
     if network:
         _check_network(rep, oids)
     else:

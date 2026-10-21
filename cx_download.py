@@ -387,13 +387,19 @@ def process_one(
 
 # ============================================================ 课程页扫描
 #
-# 思路：学习通的「章节」页把每个任务点渲染成 <iframe class="ans-attach-online"
-# data="{objectid,name,type,size,...}">。所以只要拿到章节列表，逐章请求
+# 思路：学习通的「章节」页把每个任务点渲染成一个带 data="{objectid,name,type,size,...}"
+# 的标签。所以只要拿到章节列表，逐章请求
 #     https://mooc1.chaoxing.com/mooc-ans/knowledge/cards?...&knowledgeid=<章节id>
-# 把里面的 ans-attach-online 抠出来，就等于把整门课的附件列全了。
+# 把里面的任务点抠出来，就等于把整门课的附件列全了。
 #
 # 这一步需要登录态，直接复用本机 Firefox 的 cookies.sqlite（明文存储），
 # 免去手动复制 Cookie。拿到 objectid 之后走的是原来那套 /ananas/status/ 直链。
+
+# 附件容器的 class 名改过好几版：老页面是 ans-attach-online，新页面把任务点包进
+# ans-attach-ct 里的 downloadfile iframe，编辑器插进正文的文档又是 ans-insertdoc-retract。
+# 按 class 名认必然漏（实测同一门课 42 章，只认 class 会漏掉 41/57 个），所以只认
+# 「带 objectid 的 data JSON」这个共同点。
+ATTACH_DATA_RE = re.compile(r'data="(\{[^"]*?objectid[^"]*?\})"')
 
 
 def firefox_roots() -> list[str]:
@@ -571,6 +577,27 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", _html.unescape(text or "").replace("\u00a0", " ")).strip()
 
 
+ACCOUNT_PAGE = "https://passport2.chaoxing.com/mooc/accountManage"
+
+
+def fetch_account_name(cookie: str | None, timeout: int = 15) -> str:
+    """当前登录账号的姓名，用来确认「现在用的是哪个号」。
+
+    手动 Cookie 和 Firefox 登录态可能属于不同账号，界面上不显示姓名就分不出来。
+    取不到（没登录 / 断网 / 接口改版）一律返回空串 —— 这行只是提示，不能挡扫描。
+    """
+    if not cookie:
+        return ""
+    try:
+        page = _get_text(ACCOUNT_PAGE, cookie, timeout,
+                         referer="https://i.chaoxing.com/", retries=1)
+    except Exception:  # noqa: BLE001
+        return ""
+    m = (re.search(r'id="messageName"[^>]*\bvalue="([^"]*)"', page)
+         or re.search(r'id="messageName"[^>]*>([^<]*)<', page))
+    return _clean(m.group(1)) if m else ""
+
+
 def fetch_course_name(cookie: str | None, url: str, timeout: int) -> str:
     """课程名：课程主页 <title> 就是「学期 + 课程名」。取不到就返回空串。"""
     try:
@@ -617,6 +644,32 @@ def fetch_course_chapters(cookie: str | None, courseid: str, clazzid: str,
     return chapters
 
 
+def parse_attachments(page: str) -> list[dict]:
+    """从章节页 HTML 里抠附件，按 objectid 去重。
+
+    单独拆出来是为了能脱网自检（`selftest.py` 拿一段三种写法混排的样例喂进来）。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for md in ATTACH_DATA_RE.finditer(page):
+        try:
+            info = json.loads(_html.unescape(md.group(1)))
+        except Exception:  # noqa: BLE001
+            continue
+        oid = str(info.get("objectid") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", oid) or oid in seen:
+            continue
+        seen.add(oid)
+        out.append({
+            "objectid": oid,
+            "name": _clean(info.get("name") or ""),
+            "type": info.get("type") or "",
+            "hsize": info.get("hsize") or "",
+            "jobid": str(info.get("jobid") or info.get("_jobid") or ""),
+        })
+    return out
+
+
 def fetch_chapter_attachments(cookie: str | None, courseid: str, clazzid: str,
                               cpi: str, kid: str, timeout: int = 60) -> list[dict]:
     """取某一章节下的所有附件（任务点里的文档/PPT/PDF 等）。"""
@@ -627,29 +680,7 @@ def fetch_chapter_attachments(cookie: str | None, courseid: str, clazzid: str,
     })
     url = "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards?" + q
     page = _get_text(url, cookie, timeout, referer="https://mooc1.chaoxing.com/")
-
-    out: list[dict] = []
-    for m in re.finditer(r'<[^>]*class="[^"]*ans-attach-online[^"]*"[^>]*>', page):
-        tag = m.group(0)
-        mo = re.search(r'objectid="([0-9a-fA-F]{32})"', tag)
-        md = re.search(r'data="([^"]*)"', tag)
-        info: dict = {}
-        if md:
-            try:
-                info = json.loads(_html.unescape(md.group(1)))
-            except Exception:  # noqa: BLE001
-                info = {}
-        oid = (mo.group(1) if mo else info.get("objectid") or "").lower()
-        if not re.fullmatch(r"[0-9a-f]{32}", oid):
-            continue
-        out.append({
-            "objectid": oid,
-            "name": _clean(info.get("name") or ""),
-            "type": info.get("type") or "",
-            "hsize": info.get("hsize") or "",
-            "jobid": str(info.get("jobid") or ""),
-        })
-    return out
+    return parse_attachments(page)
 
 
 def scan_course(cookie: str | None, url: str, timeout: int = 60,
