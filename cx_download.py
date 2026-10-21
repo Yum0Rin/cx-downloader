@@ -292,7 +292,10 @@ def download(url: str, dest: str, timeout: int, retries: int = 3,
             os.remove(tmp)
         except OSError:
             pass
-    raise RuntimeError(f"下载失败: {last}")
+    err = RuntimeError(f"下载失败: {last}")
+    # 把 HTTP 状态码带出去，调用方才能针对 404 给「转码不存在」这种具体提示
+    err.http_code = getattr(last, "code", None)
+    raise err
 
 
 def human(n: int) -> str:
@@ -358,6 +361,13 @@ def process_one(
                 res["skip"] = True
                 res["skip_reason"] = "视频，不支持"
                 return res
+            if want_pdf and not want_original and st.get("download"):
+                # 「仅 PDF」模式下，csv/py/ipynb/npy/exe 这些格式服务端根本不转 PDF
+                # （status 里只有 download，没有 pdf），原件明明能下。这不是失败，
+                # 是模式选窄了 —— 标「跳过」并提示换模式，别让人以为文件坏了。
+                res["skip"] = True
+                res["skip_reason"] = "该格式没有 PDF 版（改用「原件+PDF」或「仅原件」）"
+                return res
             if status and status != "success":
                 raise RuntimeError(f"接口返回 status={status!r}，且没给出可下载地址")
             raise RuntimeError("接口未返回可下载地址（download/pdf 都为空）")
@@ -375,7 +385,16 @@ def process_one(
             if not overwrite and os.path.exists(dest) and not expect:
                 res["files"].append((dest, os.path.getsize(dest), "已存在，跳过"))
                 continue
-            size = download(url, dest, timeout)
+            try:
+                size = download(url, dest, timeout)
+            except RuntimeError as e:
+                if getattr(e, "http_code", None) == 404 and dest.endswith(".pdf") and st.get("download"):
+                    # 云盘转码节点上没有这个 PDF：要么还没生成，要么根本没转。
+                    # 原件是能下的，别让人以为整份文件坏了。
+                    raise RuntimeError(
+                        "云盘上没有这份 PDF 转码（404）—— 换「原件+PDF」或「仅原件」下原件"
+                    ) from e
+                raise
             res["files"].append((dest, size, "下载完成"))
 
         res["ok"] = True

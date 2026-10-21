@@ -30,6 +30,8 @@
     （`ans-attach-ct` 外层容器和内层 iframe 可能各带一份相同 data）。
   - 新增 `fetch_account_name()`：读 `passport2.chaoxing.com/mooc/accountManage` 的
     `#messageName`，失败返回空串（不影响扫描）。
+  - `process_one()`：「仅 PDF」模式下没有 `pdf` 字段的格式（csv/py/ipynb/npy/txt/exe）
+    改标「跳过」，不再算失败；PDF 直链 404 时给「云盘没生成转码，换原件模式」的提示。
 - `cx_download_gui.py`
   - 登录态那行追加「· 账号 某某」，启动时与扫描前各刷一次（后台线程，失败静默）；
   - 新增「换号」按钮：清空手动 Cookie → 重读 Firefox `cookies.sqlite` → 重新取账号名；
