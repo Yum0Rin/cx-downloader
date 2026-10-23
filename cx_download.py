@@ -705,16 +705,42 @@ def parse_attachments(page: str) -> list[dict]:
 
 
 def fetch_chapter_attachments(cookie: str | None, courseid: str, clazzid: str,
-                              cpi: str, kid: str, timeout: int = 60) -> list[dict]:
-    """取某一章节下的所有附件（任务点里的文档/PPT/PDF 等）。"""
-    q = urllib.parse.urlencode({
-        "clazzid": clazzid, "courseid": courseid, "knowledgeid": kid, "num": "0",
-        "ut": "s", "cpi": cpi, "mooc2": "1", "isMicroCourse": "false",
-        "editorPreview": "0",
-    })
-    url = "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards?" + q
-    page = _get_text(url, cookie, timeout, referer="https://mooc1.chaoxing.com/")
-    return parse_attachments(page)
+                              cpi: str, kid: str, timeout: int = 60,
+                              max_cards: int = 20) -> list[dict]:
+    """取某一章节下的所有附件（任务点里的文档/PPT/PDF 等）。
+
+    学习通把一章拆成多张「卡片」（PPT / 习题集 / 案例 / 课程思政…），每张卡
+    用独立的 num 索引（0 起）。以前只取 num=0，后面的卡整张漏掉 —— 实测某门课
+    的习题集扫不出来就是它。num 越界时服务端返回 <title> 为空的占位页，据此
+    收尾；连吃两张空卡才停，避免某张没命名的卡把后面的卡截断。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    empty_streak = 0
+    for num in range(max_cards):
+        q = urllib.parse.urlencode({
+            "clazzid": clazzid, "courseid": courseid, "knowledgeid": kid,
+            "num": str(num), "ut": "s", "cpi": cpi, "mooc2": "1",
+            "isMicroCourse": "false", "editorPreview": "0",
+        })
+        url = "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards?" + q
+        page = _get_text(url, cookie, timeout, referer="https://mooc1.chaoxing.com/")
+        mt = re.search(r"<title>(.*?)</title>", page, re.S)
+        card = _clean(mt.group(1)) if mt else ""
+        atts = parse_attachments(page)
+        for a in atts:
+            if a["objectid"] in seen:
+                continue
+            seen.add(a["objectid"])
+            a["card"] = card
+            out.append(a)
+        if not card and not atts:
+            empty_streak += 1
+            if empty_streak >= 2:
+                break
+        else:
+            empty_streak = 0
+    return out
 
 
 def scan_course(cookie: str | None, url: str, timeout: int = 60,

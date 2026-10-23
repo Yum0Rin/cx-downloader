@@ -2,6 +2,17 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.1] - 2026-10-24
+
+### 修复
+
+- **同一章里后面的卡片整张漏扫（习题集扫不出来）**：学习通把一章拆成多张「卡片」
+  （PPT / 习题集 / 案例 / 课程思政…），每张卡用独立的 `num` 索引（0 起）。
+  旧代码只请求 `num=0`，所以每章只拿到第一张卡的附件 —— 实测某门课的习题集
+  扫不出来、PPT 后面的视频和文档也一起漏掉。现在逐张请求到越界为止
+  （越界页 `<title>` 为空、没有附件，连空两张即停），并给每个附件带上卡片名。
+  实测同一门课：修复前 24 个文件，修复后 108 个（含 17 份习题集 PDF）。
+
 ## [1.2.0] - 2026-10-21
 
 ### 修复
@@ -119,6 +130,7 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.2.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.0...v1.1.1
