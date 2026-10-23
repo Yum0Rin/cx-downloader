@@ -521,9 +521,10 @@ def load_firefox_cookies(profile: str | None = None) -> tuple[str | None, list[d
             con = sqlite3.connect(tmp)
             try:
                 rows = [
-                    {"host": h, "name": n, "value": v or "", "path": p or "/"}
-                    for h, n, v, p in con.execute(
-                        "select host, name, value, path from moz_cookies "
+                    {"host": h, "name": n, "value": v or "", "path": p or "/",
+                     "ctx": ctx or ""}
+                    for h, n, v, p, ctx in con.execute(
+                        "select host, name, value, path, originAttributes from moz_cookies "
                         "where host like '%chaoxing%'"
                     ).fetchall()
                 ]
@@ -544,9 +545,8 @@ def load_firefox_cookies(profile: str | None = None) -> tuple[str | None, list[d
     return best
 
 
-def firefox_cookie_header(profile: str | None = None) -> str:
-    """拼成 Cookie: 请求头。同名 cookie 只取第一个。"""
-    _, rows = load_firefox_cookies(profile)
+def cookie_header_from_rows(rows: list[dict]) -> str:
+    """把 cookie 行拼成 Cookie: 请求头。同名 cookie 只取第一个。"""
     seen: set[str] = set()
     parts: list[str] = []
     for r in rows:
@@ -555,6 +555,60 @@ def firefox_cookie_header(profile: str | None = None) -> str:
         seen.add(r["name"])
         parts.append(f'{r["name"]}={r["value"].strip()}')
     return "; ".join(parts)
+
+
+def firefox_cookie_header(profile: str | None = None) -> str:
+    """拼成 Cookie: 请求头。同名 cookie 只取第一个。"""
+    _, rows = load_firefox_cookies(profile)
+    return cookie_header_from_rows(rows)
+
+
+def firefox_accounts(timeout: int = 12, probe_names: bool = True) -> list[dict]:
+    """列出本机 Firefox 里能读到的所有学习通账号。
+
+    一个 Firefox profile 通常只保留**一个**账号的登录态；想同时存多个号，
+    要么用几个 profile，要么用 Multi-Account Containers（cookie 库里的
+    originAttributes / userContextId 区分）。这里把每个 profile 的每个容器
+    各算一份，用 _uid 去重，再问一次服务器补上姓名。
+
+    返回 [{name, uid, profile, profile_name, ctx, cookie, count}]；
+    读不到完整登录态（没有 _uid）的也列出来，name 为空，界面上显示 UID/来源。
+    """
+    out: list[dict] = []
+    for prof in find_firefox_profiles():
+        _, rows = load_firefox_cookies(prof)
+        if not rows:
+            continue
+        by_ctx: dict[str, list[dict]] = {}
+        for r in rows:
+            by_ctx.setdefault(r.get("ctx") or "", []).append(r)
+        for ctx, grp in by_ctx.items():
+            header = cookie_header_from_rows(grp)
+            uid = next((r["value"].strip() for r in grp
+                        if r["name"] in ("_uid", "UID") and r["value"].strip()), "")
+            name = ""
+            if probe_names and uid:
+                try:
+                    name = fetch_account_name(header, timeout)
+                except Exception:  # noqa: BLE001
+                    name = ""
+            out.append({
+                "name": name,
+                "uid": uid,
+                "profile": prof,
+                "profile_name": os.path.basename(prof.rstrip("\\/")),
+                "ctx": ctx,
+                "cookie": header,
+                "count": len(grp),
+            })
+    # 同一个号可能在多个 profile / 容器里，各自 cookie 完整度不同：留最全的那份
+    dedup: dict[str, dict] = {}
+    for a in out:
+        key = a["uid"] or f'{a["profile"]}|{a["ctx"]}'
+        old = dedup.get(key)
+        if old is None or a["count"] > old["count"]:
+            dedup[key] = a
+    return sorted(dedup.values(), key=lambda a: (not a["name"], a["name"] or a["uid"]))
 
 
 class LoginRequired(RuntimeError):

@@ -1390,17 +1390,110 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
 
     def switch_account(self):
-        """换号：清掉手动 Cookie，回到读 Firefox，再重新确认账号名。"""
-        had_manual = bool(self.cookie.get().strip())
-        self.cookie.set("")
-        self._account_name = ""
-        self._refresh_firefox_cookies()
-        self._update_auth_label()
-        if had_manual:
-            self.log("已清空手动 Cookie，改用本机 Firefox 登录态", "dim")
-        if not self._fx_cookie_count:
-            self.log("本机没读到学习通 Cookie —— 请先在 Firefox 里登录，或点「粘贴」填新的", "err")
-        self._fetch_account_name_async()
+        """换号：列出 Firefox 里能读到的所有学习通账号，让用户挑一个。
+
+        一个 Firefox profile 一般只保留一个号的登录态；多个号来自多个 profile
+        或 Multi-Account Containers（按 originAttributes 分开）。
+        """
+        self._open_account_picker()
+
+    def _open_account_picker(self):
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("选择学习通账号")
+        dlg.configure(fg_color=pair("page"))
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        try:
+            dlg.after(60, dlg.lift)
+        except Exception:  # noqa: BLE001
+            pass
+        self._acct_dlg = dlg
+
+        wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
+                            border_width=1, border_color=pair("border"))
+        wrap.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(
+            wrap, text="选择学习通账号", anchor="w", height=26,
+            font=ctk.CTkFont(FONT, 15, "bold"), text_color=pair("primary"),
+        ).pack(fill="x", padx=16, pady=(14, 4))
+
+        body = ctk.CTkFrame(wrap, fg_color="transparent")
+        body.pack(fill="x", padx=16)
+        self._acct_body = body
+        self._acct_status = ctk.CTkLabel(
+            body, text="正在读取 Firefox 里的学习通账号…", anchor="w", justify="left",
+            font=ctk.CTkFont(FONT, 12), text_color=pair("muted"), wraplength=430,
+        )
+        self._acct_status.pack(fill="x", pady=(2, 8))
+
+        def work():
+            try:
+                accts = core.firefox_accounts()
+            except Exception:  # noqa: BLE001
+                accts = []
+            self.q.put(("accounts", accts))
+
+        threading.Thread(target=work, daemon=True).start()
+
+        row = ctk.CTkFrame(wrap, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(10, 14))
+        self._btn(row, "手动粘贴 Cookie", lambda: self.paste_cookie(dlg),
+                  width=132).pack(side="left")
+        self._btn(row, "取消", dlg.destroy, width=64).pack(side="right")
+
+        dlg.update_idletasks()
+        w, h = 480, dlg.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 3
+        dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
+
+    def _fill_accounts(self, accts):
+        dlg = getattr(self, "_acct_dlg", None)
+        if not dlg or not dlg.winfo_exists():
+            return
+        body = self._acct_body
+        for w in body.winfo_children():
+            w.destroy()
+
+        def use(header, label):
+            self.cookie.set(header)
+            self._account_name = ""
+            self._update_auth_label()
+            self.log(f"已切换到：{label}", "ok")
+            self._persist_cookie()
+            self._fetch_account_name_async()
+            dlg.destroy()
+
+        if not accts:
+            ctk.CTkLabel(
+                body, text=("Firefox 里没读到可用的学习通账号。\n"
+                            "如果浏览器里明明登录着，可能是 Cookie 还没写盘：\n"
+                            "在 Firefox 里刷新一下学习通页面，或直接粘贴 Cookie。"),
+                anchor="w", justify="left", font=ctk.CTkFont(FONT, 12),
+                text_color=pair("muted"), wraplength=430,
+            ).pack(fill="x")
+            return
+
+        for a in accts:
+            name = a.get("name") or "未识别姓名"
+            src = a.get("profile_name") or "Firefox"
+            if a.get("ctx"):
+                src += " / 容器"
+            label = f"{name} · {src}"
+            if a.get("uid"):
+                label += f"（UID {a['uid']}）"
+            self._btn(body, label, lambda a=a, label=label: use(a["cookie"], label),
+                      width=430, anchor="w").pack(fill="x", pady=2)
+
+        self._btn(body, "用 Firefox 自动（cookie 最全的那个）",
+                  lambda: use("", "Firefox 自动"), width=430,
+                  anchor="w").pack(fill="x", pady=(6, 2))
+
+    def _persist_cookie(self):
+        """只把 Cookie 落盘，不碰界面上其它未保存的设置。"""
+        d = load_settings()
+        d["cookie"] = self.cookie.get()
+        save_settings(d)
 
     def _show_login_help(self):
         """没登录态时的引导弹窗。"""
@@ -1855,6 +1948,8 @@ class App(ctk.CTk):
                     self._account_pending = False
                     self._account_name = payload or ""
                     self._update_auth_label()
+                elif kind == "accounts":
+                    self._fill_accounts(payload)
                 elif kind == "scan_files":
                     self._on_scan_files(*payload)
                 elif kind == "need_login":

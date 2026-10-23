@@ -2,6 +2,25 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.2] - 2026-10-24
+
+### 新增
+
+- **多账号识别与选择**：点「换号」会读取本机 Firefox 里所有能读到的学习通账号
+  （不同 profile、或 Multi-Account Containers 的容器各算一个），列出姓名和来源，
+  选哪个就切到哪个，并立即保存。读不到完整登录态时也会给出手动粘贴入口。
+  一个 Firefox 配置通常只保留一个账号的登录态，想同时存多个号需要多个 profile / 容器；
+  浏览器刚登录时 Cookie 可能还没写盘，刷新一下学习通页面即可。
+
+### 变更
+
+- 「换号」不再是简单的「清空手动 Cookie 回退 Firefox」，改成账号选择弹窗；
+  里面仍保留「用 Firefox 自动」和「手动粘贴 Cookie」。
+
+### 文档
+
+- README 主界面截图里的账号姓名已隐去。
+
 ## [1.2.1] - 2026-10-24
 
 ### 修复
@@ -130,6 +149,7 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.2.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.1...v1.1.2

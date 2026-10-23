@@ -33,7 +33,7 @@
 | **自动查重** | 本地已有且**内容相同**的文件自动跳过；按实际落点（模式 + 层级）判定 |
 | **原件 / PDF** | 可只下原件、只下 PDF、或两个都要；「仅 PDF」时 csv/py 这类没 PDF 版的自动下原件 |
 | **视频可选** | 默认跳过；打开后可选取**转码 mp4**（小、能直接播）或**原件**（画质最好、体积大） |
-| **账号看得见** | 登录态那行显示当前账号姓名，旁边「换号」一键切回 Firefox 登录态 |
+| **账号看得见** | 登录态那行显示当前账号姓名；「换号」可列出 Firefox 里读到的多个账号（多 profile / 容器）供你选 |
 | **目录层级可选** | 课程名 / 来源 / 分组 / 章节名，四级自由勾选，实时预览落点 |
 | **命令行版** | `cx_download.py` 只用标准库，可以塞进脚本里 |
 | **可打包** | 一条 `build.ps1` 出单文件 exe，自带冻结自检 |
@@ -112,6 +112,12 @@ install -Dm644 app_preview.png ~/.local/share/pixmaps/cx-downloader.png   # 可�
 在 Firefox 里打开学习通登录一次就行，之后工具会自动读取它的登录状态。
 （Firefox 的 cookie 是明文存在 `cookies.sqlite` 里的，读起来不需要解密。）
 
+**多个账号**：点 Cookie 右边的「换号」，工具会列出本机 Firefox 里能读到的所有学习通账号
+（不同 profile、或用 Multi-Account Containers 开的容器各算一个），选哪个就用哪个。
+一个 Firefox 配置通常只保留一个号的登录态，想同时存多个号就得开多个 profile / 容器。
+如果列表里没有你刚登录的号，多半是 Cookie 还没写盘 —— 在 Firefox 里刷新一下学习通页面，
+或直接用下面的方式②粘贴 Cookie。
+
 **② 手贴 Cookie（任何浏览器都行，不用装 Firefox）**
 
 1. 浏览器打开学习通并登录
@@ -122,8 +128,8 @@ install -Dm644 app_preview.png ~/.local/share/pixmaps/cx-downloader.png   # 可�
 
 > Cookie 会过期，过一阵要重新弄一次。
 
-**换账号**：手动填的 Cookie 优先于 Firefox 登录态。在浏览器里换了号，就点 Cookie 右边的
-「换号」—— 清掉手动 Cookie、重读 Firefox、刷新账号名。登录态那行会显示**当前账号姓名**，
+**换账号**：手动填的 Cookie 优先于 Firefox 登录态。点 Cookie 右边的「换号」会列出
+Firefox 里读到的所有账号供你挑；也可以直接粘一份新 Cookie。登录态那行会显示**当前账号姓名**，
 扫出来的东西和预期不符时，先看这行是不是你要的号。
 
 界面上每个 `ⓘ` 圆圈鼠标悬停都会展开对应的说明，不用记这些。
@@ -338,6 +344,7 @@ docs/                       README 用的截图
 | 「仅 PDF」时 csv/py/xlsx 全失败 | v1.2.0 起默认下原件（选项「无 PDF 版时下原件」）；关掉则标「跳过」 |
 | 下出来的是别人的课 / 课程列表不对 | 看登录态那行显示的账号名，点「换号」清掉手动 Cookie 重新读 Firefox |
 | Cookie 又失效了 | Cookie 有时效，重新获取一次；用 Firefox 只要它还登录着就不用管 |
+| 「换号」里看不到刚登录的账号 | Firefox 正在运行时会话 Cookie 可能还没写进 `cookies.sqlite`：刷新一下学习通页面，或先关掉 Firefox 再开下载器；也可以直接粘贴 Cookie |
 | Safari / Chrome 能自动读登录态吗 | 不能，只自动读 Firefox；其它浏览器请手贴 Cookie |
 
 ---
