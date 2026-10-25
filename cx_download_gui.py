@@ -1604,13 +1604,13 @@ class App(ctk.CTk):
             progress_color=pair("track"),
         )
         self.pb.set(0)
-        self.pb.pack(side="left", fill="x", expand=True, padx=(6, 12))
+        # 空闲时不显示：平时只剩按钮和状态文字，不会多一条看不懂的空线
 
         self.lbl = ctk.CTkLabel(
-            row, text="就绪", width=120, anchor="e",
+            row, text="就绪", width=100, anchor="e",
             font=ctk.CTkFont(FONT, 13), text_color=pair("muted"), height=40,
         )
-        self.lbl.pack(side="left")
+        self.lbl.pack(side="right", padx=(0, 12))
 
     def _build_log(self, parent):
         card = Card(parent, "⑤ 日志")
@@ -2361,6 +2361,9 @@ class App(ctk.CTk):
         self.btn_start.configure(state="disabled")
         self.btn_scan.configure(state="disabled")
         self.btn_stop.configure(state="normal")
+        self.pb.set(0)
+        self.pb.pack(side="left", fill="x", expand=True, padx=(6, 12),
+                     before=self.lbl)
 
         dirs = sorted({d for _, _, d, _, _ in job_list})
         self.log(f"\n共 {len(job_list)} 个文件 → {dirs[0] if len(dirs) == 1 else '多目录'}", "head")
@@ -2503,6 +2506,7 @@ class App(ctk.CTk):
         self.btn_start.configure(state="normal")
         self.btn_scan.configure(state="normal")
         self.btn_stop.configure(state="disabled")
+        self.pb.pack_forget()
         self.lbl.configure(
             text=f"完成 {self.ok}/{self.total}",
             text_color=pair("primary") if self.fail else pair("text"),

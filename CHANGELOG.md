@@ -2,6 +2,19 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.1] - 2026-10-25
+
+### 修复
+
+- **下载进度条只在下载时出现**：空闲时不再在操作栏里留一条看不懂的空线。
+- **状态文字位置**：「共 N 个 / 就绪」不再贴着窗口最右边，和按钮区留出间距。
+- 设置 / 账号选择 / 更新弹窗的高度按内容自适应，去掉底部大片空白。
+
+### 文档
+
+- 更新主界面截图：示例课程、示例目录、示例账号，已去隐私化。
+- README 补充右上角「设置」能做什么。
+
 ## [1.3.0] - 2026-10-25
 
 ### 新增
@@ -182,6 +195,7 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.3.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.1...v1.2.2
