@@ -844,18 +844,26 @@ class App(ctk.CTk):
             pass
 
     def _show_support(self):
-        """设置页角落的「支持作者」：点开并排显示微信 / 支付宝收款码。"""
+        """设置页角落的「请作者喝杯奶茶」：点开并排显示微信 / 支付宝收款码。"""
         codes = [("微信", asset_path("support-wechat.png")),
                  ("支付宝", asset_path("support-alipay.png"))]
         items = [(label, p) for label, p in codes if os.path.isfile(p)]
 
         dlg = ctk.CTkToplevel(self)
-        dlg.title("支持作者")
+        dlg.title("请作者喝杯奶茶")
         dlg.configure(fg_color=pair("page"))
         dlg.resizable(False, False)
-        dlg.transient(self)
+        # 从设置弹窗里点开的：挂到设置窗口上，别被它压在下面
+        parent = getattr(self, "_settings_dlg", None)
+        if parent is not None and parent.winfo_exists():
+            dlg.transient(parent)
+        else:
+            dlg.transient(self)
         try:
-            dlg.after(60, dlg.lift)
+            dlg.lift()
+            dlg.focus_force()
+            dlg.attributes("-topmost", True)
+            dlg.after(500, lambda: dlg.winfo_exists() and dlg.attributes("-topmost", False))
         except Exception:  # noqa: BLE001
             pass
 
@@ -863,7 +871,7 @@ class App(ctk.CTk):
                             border_width=1, border_color=pair("border"))
         wrap.pack(fill="both", padx=14, pady=14)
         ctk.CTkLabel(
-            wrap, text="谢谢支持", anchor="w", height=24,
+            wrap, text="如果这个工具帮到了你，可以请作者喝杯奶茶", anchor="w",
             font=ctk.CTkFont(FONT, 14, "bold"), text_color=pair("primary"),
         ).pack(fill="x", padx=16, pady=(12, 2))
 
@@ -1013,8 +1021,8 @@ class App(ctk.CTk):
                   ).pack(side="left", padx=(8, 0))
         if any(os.path.isfile(asset_path(f)) for f in
                ("support-wechat.png", "support-alipay.png")):
-            self._btn(row_links, "支持作者", self._show_support,
-                      width=88).pack(side="left", padx=(8, 0))
+            self._btn(row_links, "请作者喝杯奶茶", self._show_support,
+                      width=124).pack(side="left", padx=(8, 0))
 
         state = {"done": False, "info": None}
 
