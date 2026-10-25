@@ -238,6 +238,11 @@ SKIP_HINT = (
     "靠 HTTP Range 只取 64KB，不用整包重下。\n\n"
     "关掉的话，同名文件一律重下覆盖。"
 )
+CACHE_HINT = (
+    "记住上次扫到的文件列表，10 分钟内重复扫描同一门课会直接秒开。\n\n"
+    "想拿最新列表：再点一次「扫描」就会跳过缓存重新扫。\n"
+    "关掉的话，每次扫描都向服务器重新要一遍（24 章约 10 秒）。"
+)
 FALLBACK_HINT = (
     "只在「仅 PDF」模式下起作用。\n\n"
     "csv / py / ipynb / npy / xlsx 这类格式学习通不转 PDF，\n"
@@ -998,19 +1003,7 @@ class App(ctk.CTk):
         )
         self.tg_appearance.pack(anchor="w", padx=16, pady=(4, 0))
 
-        ctk.CTkSwitch(
-            wrap, text="扫描结果缓存",
-            variable=self.scan_cache, font=ctk.CTkFont(FONT, 12),
-            text_color=pair("text"), progress_color=pair("primary"),
-            fg_color=pair("input_border"), button_color=("#FFFFFF", "#E4EAF0"),
-            button_hover_color=("#FFFFFF", "#FFFFFF"),
-        ).pack(anchor="w", padx=18, pady=(10, 0))
-        ctk.CTkLabel(
-            wrap, text="记住上次扫到的文件列表；10 分钟内再扫同一门课会直接秒开。"
-                       "想拿最新列表，再点一次「扫描」就行。",
-            anchor="w", justify="left", wraplength=510,
-            font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
-        ).pack(fill="x", padx=18, pady=(2, 0))
+
 
         # ---- 关于 / 更新 ----
         ctk.CTkLabel(wrap, text="关于", anchor="w",
@@ -1370,6 +1363,21 @@ class App(ctk.CTk):
             button_hover_color=("#FFFFFF", "#FFFFFF"),
         ).pack(side="left", padx=(16, 0))
         HintIcon(row2, SKIP_HINT).pack(side="left", padx=(6, 0))
+
+        row_cache = ctk.CTkFrame(card, fg_color="transparent")
+        row_cache.pack(fill="x", padx=14, pady=(0, 2))
+        ctk.CTkSwitch(
+            row_cache,
+            text="扫描结果缓存",
+            variable=self.scan_cache,
+            font=ctk.CTkFont(FONT, 12),
+            text_color=pair("text"),
+            progress_color=pair("primary"),
+            fg_color=pair("input_border"),
+            button_color=("#FFFFFF", "#E4EAF0"),
+            button_hover_color=("#FFFFFF", "#FFFFFF"),
+        ).pack(side="left")
+        HintIcon(row_cache, CACHE_HINT).pack(side="left", padx=(6, 0))
 
         row3 = ctk.CTkFrame(card, fg_color="transparent")
         row3.pack(fill="x", padx=14, pady=(0, 2))
