@@ -42,6 +42,7 @@ import cx_download as core  # noqa: E402
 
 SETTINGS = os.path.join(os.path.expanduser("~"), ".cx_download_gui.json")
 QUEUE_FILE = os.path.join(os.path.expanduser("~"), ".cx_download_queue.json")
+QQ_GROUP = "1129676506"
 
 
 def asset_path(name: str) -> str:
@@ -843,6 +844,14 @@ class App(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
 
+    def _copy_qq(self):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(QQ_GROUP)
+            self.log(f"已复制 QQ 群号：{QQ_GROUP}", "ok")
+        except Exception:  # noqa: BLE001
+            pass
+
     def _show_support(self):
         """设置页角落的「请作者喝杯奶茶」：点开并排显示微信 / 支付宝收款码。"""
         codes = [("微信", asset_path("support-wechat.png")),
@@ -1023,6 +1032,15 @@ class App(ctk.CTk):
                ("support-wechat.png", "support-alipay.png")):
             self._btn(row_links, "请作者喝杯奶茶", self._show_support,
                       width=124).pack(side="left", padx=(8, 0))
+
+        # 交流 / 反馈：一行字 + 一键复制群号
+        row_qq = ctk.CTkFrame(wrap, fg_color="transparent")
+        row_qq.pack(fill="x", padx=16, pady=(10, 0))
+        ctk.CTkLabel(
+            row_qq, text=f"想联系作者、反馈问题或交流使用，可以加 QQ 群 {QQ_GROUP}",
+            anchor="w", font=ctk.CTkFont(FONT, 12), text_color=pair("muted"),
+        ).pack(side="left")
+        self._btn(row_qq, "复制群号", self._copy_qq, width=80).pack(side="left", padx=(10, 0))
 
         state = {"done": False, "info": None}
 

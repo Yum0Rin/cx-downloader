@@ -130,6 +130,8 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 
 ## 常见问题
 
+> 使用交流 / 反馈问题：QQ 群 **1129676506**（设置页里也有一键复制）。
+
 | 现象 | 原因 / 解决 |
 | --- | --- |
 | 扫出来 0 个文件 / 提示需要登录 | 先解决登录态；课程链接要带 `enc` 参数 |

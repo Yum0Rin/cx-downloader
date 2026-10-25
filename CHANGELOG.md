@@ -2,6 +2,13 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.3] - 2026-10-25
+
+### 新增
+
+- **交流群**：设置页加了一行「想联系作者、反馈问题或交流使用，可以加 QQ 群 1129676506」，
+  旁边按钮一键复制群号。
+
 ## [1.3.2] - 2026-10-25
 
 ### 新增
@@ -202,6 +209,7 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.3.3]: https://github.com/Yum0Rin/cx-downloader/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.3...v1.3.0
