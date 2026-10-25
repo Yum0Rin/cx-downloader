@@ -32,7 +32,7 @@ import time
 import tkinter as tk
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tkinter import filedialog, messagebox
+from tkinter import colorchooser, filedialog, messagebox
 
 import customtkinter as ctk
 
@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cx_download as core  # noqa: E402
 
 SETTINGS = os.path.join(os.path.expanduser("~"), ".cx_download_gui.json")
+QUEUE_FILE = os.path.join(os.path.expanduser("~"), ".cx_download_queue.json")
 DEFAULT_OUT = os.path.join(os.path.expanduser("~"), "Downloads", "超星下载")
 
 # ---------------------------------------------------------------- 配色
@@ -87,6 +88,44 @@ DARK = {
 def pair(key: str):
     """返回 CustomTkinter 需要的 (浅色, 深色) 颜色元组。"""
     return (LIGHT[key], DARK[key])
+
+
+DEFAULT_ACCENT = "#2F4858"
+ACCENT_PRESETS = [
+    ("黛蓝", "#2F4858"),
+    ("靛青", "#3B5BA5"),
+    ("松绿", "#2E7D6B"),
+    ("紫棠", "#6B4C8A"),
+    ("朱砂", "#C03A2B"),
+    ("玄灰", "#4A4F57"),
+]
+
+
+def _hex_rgb(color: str) -> tuple[int, int, int]:
+    color = color.lstrip("#")
+    return tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _mix(color: str, other: str, t: float) -> str:
+    """把两个颜色按比例混合（t=0 全取 color，t=1 全取 other）。"""
+    a, b = _hex_rgb(color), _hex_rgb(other)
+    return "#" + "".join(
+        f"{round(x + (y - x) * t):02X}" for x, y in zip(a, b)
+    )
+
+
+def apply_accent(accent: str) -> None:
+    """用选定的主题色重算明暗两套 primary / hover。
+
+    浅色模式直接用选定色，hover 压暗；深色模式整体提亮一档，避免在深底上发闷。
+    """
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", accent or ""):
+        accent = DEFAULT_ACCENT
+    LIGHT["primary"] = accent
+    LIGHT["primary_hover"] = _mix(accent, "#000000", 0.16)
+    DARK["primary"] = _mix(accent, "#FFFFFF", 0.16)
+    DARK["primary_hover"] = _mix(accent, "#FFFFFF", 0.28)
+
 
 
 # 日志区配色。Tk 的 tag 颜色不支持 (浅,深) 元组，所以主题切换时手动重刷。
@@ -584,6 +623,8 @@ class App(ctk.CTk):
         self.minsize(900, 600)
 
         cfg = load_settings()
+        self.accent = cfg.get("accent") or DEFAULT_ACCENT
+        apply_accent(self.accent)
         self.outdir = ctk.StringVar(value=cfg.get("outdir") or DEFAULT_OUT)
         self.mode = ctk.StringVar(value=MODE_BY_VALUE.get(cfg.get("mode", "orig"), "仅原件"))
         # 「仅 PDF」模式下，csv/py/xlsx 这类服务端不转码的格式默认连原件一起下，
@@ -595,6 +636,7 @@ class App(ctk.CTk):
             value="原件" if cfg.get("video_original") else "转码 mp4")
         self.jobs = ctk.StringVar(value=str(cfg.get("jobs") or 4))
         self.auto_skip = ctk.BooleanVar(value=bool(cfg.get("auto_skip", True)))
+        self.scan_cache = ctk.BooleanVar(value=bool(cfg.get("scan_cache", True)))
         self.cookie = ctk.StringVar(value=cfg.get("cookie") or "")
         self.appearance = ctk.StringVar(value=cfg.get("appearance") or "跟随系统")
         # 目录层级：勾中的才会真的建目录。默认只建「课程名」一级，跟老行为一致。
@@ -610,10 +652,13 @@ class App(ctk.CTk):
         self.scan_worker: threading.Thread | None = None
         # 任务列表（扫描结果）。每个元素见 _add_task_row 里的字段说明。
         self.tasks: list[dict] = []
+        self._failed_jobs: list[tuple] = []   # 本次下载失败的 job，供「重试失败」
         self.groups: dict[str, dict] = {}     # 分组名 → {var, btn, members}
         self.collapsed: set[str] = set()      # 被折叠起来的分组名
         # 本次扫描时的「保存目录 + 层级勾选」，用来判断查重结果是否还有效
         self.scan_key = ""
+        self._last_scan_sig = ""
+        self._last_scan_ts = 0.0
         self._fx_cookie_count = 0             # 本机 Firefox 里 chaoxing cookie 的条数
         self._live_cookie = ""                # 从运行中 Firefox 读到的实时 Cookie
         self._account_name = ""               # 当前登录态对应的账号姓名（取不到就是空）
@@ -633,6 +678,7 @@ class App(ctk.CTk):
         self.cookie.trace_add("write", lambda *_: self._update_auth_label())
         self.after(300, self._probe_live_cookie)
         self.after(600, self._fetch_account_name_async)
+        self.after(800, self._restore_queue)
         self.after(1500, self._check_update_async)
         self.after(100, self._drain)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -707,8 +753,14 @@ class App(ctk.CTk):
         self._apply_titlebar()
         self._style_log()
         # 选中态是靠变量算出来的，变量被外部改过时这里一并同步
-        for tg in (self.tg_appearance, self.tg_mode):
-            tg._restyle()
+        # 选项态是控件自绘的，跟随外部主题时得手动同步
+        for tg in (getattr(self, "tg_appearance", None), getattr(self, "tg_mode", None)):
+            if tg is None:
+                continue
+            try:
+                tg._restyle()
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---------------- 界面 ----------------
     def _build(self):
@@ -766,17 +818,8 @@ class App(ctk.CTk):
             height=18,
         ).pack(anchor="w")
 
-        self.btn_github = self._btn(head, "GitHub", self._open_github, width=68)
-        self.btn_github.pack(side="right", padx=(10, 0))
-
-        self.tg_appearance = ToggleGroup(
-            head,
-            values=["跟随系统", "浅色", "深色"],
-            variable=self.appearance,
-            command=self._on_appearance,
-            selected=(pair("text"), pair("secondary_hover"), ("#FFFFFF", "#16191E")),
-        )
-        self.tg_appearance.pack(side="right", padx=(10, 0))
+        self.btn_settings = self._btn(head, "设置", self._open_settings, width=68)
+        self.btn_settings.pack(side="right", padx=(10, 0))
 
         # 有新版时才 pack（见 _on_update）
         self.btn_update = ctk.CTkButton(
@@ -787,12 +830,197 @@ class App(ctk.CTk):
         )
         self._update_info: dict | None = None
 
-    # ---------------- GitHub / 更新 ----------------
+    # ---------------- GitHub / 更新 / 设置 ----------------
     def _open_github(self):
         try:
             webbrowser.open(core.GITHUB_URL)
         except Exception:  # noqa: BLE001
             pass
+
+    def _open_settings(self):
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("设置")
+        dlg.configure(fg_color=pair("page"))
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        try:
+            dlg.after(60, dlg.lift)
+        except Exception:  # noqa: BLE001
+            pass
+        self._settings_dlg = dlg
+
+        wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
+                            border_width=1, border_color=pair("border"))
+        wrap.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(
+            wrap, text="设置", anchor="w", height=26,
+            font=ctk.CTkFont(FONT, 15, "bold"), text_color=pair("primary"),
+        ).pack(fill="x", padx=16, pady=(14, 6))
+
+        # ---- 主题色 ----
+        ctk.CTkLabel(wrap, text="主题色（改完保存，重启后生效）", anchor="w",
+                     font=ctk.CTkFont(FONT, 12), text_color=pair("text"),
+                     ).pack(fill="x", padx=16)
+        self._accent_pick = self.accent
+        swatches = ctk.CTkFrame(wrap, fg_color="transparent")
+        swatches.pack(fill="x", padx=16, pady=(6, 0))
+        accent_btns: dict[str, ctk.CTkButton] = {}
+        lbl_accent = ctk.CTkLabel(
+            wrap, text=f"当前：{self.accent}", anchor="w",
+            font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
+        )
+
+        def mark_accent():
+            for color, btn in accent_btns.items():
+                if btn is None:
+                    continue
+                btn.configure(border_width=3 if color == self._accent_pick else 0,
+                              border_color=pair("text"))
+            lbl_accent.configure(text=f"当前：{self._accent_pick}")
+
+        def choose(color):
+            self._accent_pick = color
+            mark_accent()
+
+        for name, color in ACCENT_PRESETS:
+            btn = ctk.CTkButton(
+                swatches, text="", width=34, height=30, corner_radius=7,
+                fg_color=color, hover_color=color,
+                command=lambda c=color: choose(c),
+            )
+            btn.pack(side="left", padx=(0, 8))
+            accent_btns[color] = btn
+
+        def custom():
+            _, hexv = colorchooser.askcolor(color=self._accent_pick,
+                                            title="选择主题色")
+            if hexv:
+                choose(hexv.upper())
+
+        self._btn(swatches, "自定义…", custom, width=84).pack(side="left")
+        lbl_accent.pack(fill="x", padx=16, pady=(4, 0))
+        mark_accent()
+
+        # ---- 外观 ----
+        ctk.CTkLabel(wrap, text="外观", anchor="w",
+                     font=ctk.CTkFont(FONT, 12), text_color=pair("text"),
+                     ).pack(fill="x", padx=16, pady=(12, 0))
+        self.tg_appearance = ToggleGroup(
+            wrap, values=["跟随系统", "浅色", "深色"],
+            variable=self.appearance, command=self._on_appearance,
+            selected=(pair("text"), pair("secondary_hover"), ("#FFFFFF", "#16191E")),
+        )
+        self.tg_appearance.pack(anchor="w", padx=16, pady=(4, 0))
+
+        ctk.CTkSwitch(
+            wrap, text="扫描缓存（10 分钟内重复扫描直接复用；再点一次「扫描」可强制刷新）",
+            variable=self.scan_cache, font=ctk.CTkFont(FONT, 12),
+            text_color=pair("text"), progress_color=pair("primary"),
+            fg_color=pair("input_border"), button_color=("#FFFFFF", "#E4EAF0"),
+            button_hover_color=("#FFFFFF", "#FFFFFF"),
+        ).pack(anchor="w", padx=16, pady=(10, 0))
+
+        # ---- 关于 / 更新 ----
+        ctk.CTkLabel(wrap, text="关于", anchor="w",
+                     font=ctk.CTkFont(FONT, 12), text_color=pair("text"),
+                     ).pack(fill="x", padx=16, pady=(14, 0))
+        row_about = ctk.CTkFrame(wrap, fg_color="transparent")
+        row_about.pack(fill="x", padx=16, pady=(4, 0))
+        ctk.CTkLabel(row_about, text=f"超星文件下载器 v{core.__version__}",
+                     font=ctk.CTkFont(FONT, 12), text_color=pair("text"),
+                     anchor="w").pack(side="left")
+        lbl_status = ctk.CTkLabel(row_about, text="", font=ctk.CTkFont(FONT, 11),
+                                  text_color=pair("muted"), anchor="w")
+        lbl_status.pack(side="left", padx=(10, 0))
+
+        btn_check = self._btn(row_about, "检查更新", None, width=84)
+        btn_check.pack(side="right")
+
+        row_links = ctk.CTkFrame(wrap, fg_color="transparent")
+        row_links.pack(fill="x", padx=16, pady=(8, 0))
+        self._btn(row_links, "打开 GitHub", self._open_github, width=104).pack(side="left")
+        self._btn(row_links, "最新 Release",
+                  lambda: webbrowser.open(core.RELEASES_URL), width=104
+                  ).pack(side="left", padx=(8, 0))
+
+        state = {"done": False, "info": None}
+
+        def check():
+            btn_check.configure(state="disabled", text="检查中…")
+            lbl_status.configure(text="", text_color=pair("muted"))
+            state["done"], state["info"] = False, None
+
+            def work():
+                try:
+                    state["info"] = core.check_update()
+                except Exception:  # noqa: BLE001
+                    state["info"] = None
+                state["done"] = True
+
+            threading.Thread(target=work, daemon=True).start()
+
+            def poll():
+                if not dlg.winfo_exists():
+                    return
+                if not state["done"]:
+                    dlg.after(200, poll)
+                    return
+                btn_check.configure(state="normal", text="检查更新")
+                info = state["info"]
+                if info:
+                    lbl_status.configure(text=f"发现 v{info['version']}",
+                                         text_color=pair("primary"))
+                    btn_check.configure(text="查看更新",
+                                        command=lambda: self._on_update(info))
+                else:
+                    lbl_status.configure(text="已是最新", text_color=pair("ok"))
+
+            dlg.after(200, poll)
+
+        btn_check.configure(command=check)
+
+        # ---- 底部按钮 ----
+        row = ctk.CTkFrame(wrap, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(16, 14))
+
+        def save(restart=False):
+            d = load_settings()
+            changed = (d.get("accent") != self._accent_pick) or (
+                d.get("appearance") != self.appearance.get())
+            d["accent"] = self._accent_pick
+            d["appearance"] = self.appearance.get()
+            d["scan_cache"] = bool(self.scan_cache.get())
+            save_settings(d)
+            self.accent = self._accent_pick
+            if restart:
+                self._restart_app()
+            elif changed:
+                self.log("设置已保存。主题色需要重启程序才会生效。", "ok")
+                messagebox.showinfo(
+                    "设置已保存",
+                    "主题色已保存，重启程序后生效。\n（外观切换是立即生效的）",
+                )
+            else:
+                self.log("设置已保存", "dim")
+
+        self._btn(row, "保存并重启", lambda: save(True), width=110).pack(side="right")
+        self._btn(row, "保存", lambda: save(False), width=72).pack(side="right", padx=(0, 8))
+        self._btn(row, "关闭", dlg.destroy, width=64).pack(side="left")
+
+        dlg.update_idletasks()
+        w, h = 540, dlg.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 3
+        dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
+
+    @staticmethod
+    def _restart_app():
+        """按当前启动方式重启自己（源码版重启 python，打包版重启 exe）。"""
+        if getattr(sys, "frozen", False):
+            args = [sys.executable] + sys.argv[1:]
+        else:
+            args = [sys.executable] + sys.argv
+        os.execv(sys.executable, args)
 
     def _check_update_async(self):
         def work():
@@ -1299,6 +1527,8 @@ class App(ctk.CTk):
         )
         self._paint_groups()
         self._update_count()
+        if self.tasks:
+            self.after(800, self._save_queue)
 
     def _build_actions(self, parent):
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1348,6 +1578,19 @@ class App(ctk.CTk):
             command=self.stop,
         )
         self.btn_stop.pack(side="left", padx=10)
+
+        self.btn_retry = ctk.CTkButton(
+            row,
+            text="重试失败",
+            width=104,
+            height=40,
+            corner_radius=11,
+            font=ctk.CTkFont(FONT, 13),
+            fg_color=pair("primary"),
+            hover_color=pair("primary_hover"),
+            text_color="#FFFFFF",
+            command=self._retry_failed,
+        )
 
         self.pb = ctk.CTkProgressBar(
             row,
@@ -1910,6 +2153,14 @@ class App(ctk.CTk):
             self.q.put(("scan_log", (msg, tag)))
 
         try:
+            sig = "|".join(urls)
+            now = time.time()
+            force = (sig == self._last_scan_sig
+                     and now - self._last_scan_ts < 120)
+            use_cache = bool(self.scan_cache.get()) and not force
+            self._last_scan_sig, self._last_scan_ts = sig, now
+            if force:
+                say("已跳过扫描缓存，重新向服务器要最新列表…", "dim")
             if urls and not cookie:
                 say("没读到登录态 —— 请先在 Firefox 登录学习通，"
                     "或把浏览器的 Cookie 粘到「Cookie」框里", "err")
@@ -1933,7 +2184,9 @@ class App(ctk.CTk):
 
                 # ① 章节页的任务点附件
                 try:
-                    sc = core.scan_course(cookie, u, self.timeout, progress=lambda m: say(m))
+                    sc = core.scan_course(cookie, u, self.timeout,
+                                          progress=lambda m: say(m),
+                                          use_cache=use_cache)
                     say(f"章节任务点：{len(sc['files'])} 个")
                     core.resolve_course_files(
                         cookie, sc["files"], outdir, self.timeout,
@@ -2005,6 +2258,7 @@ class App(ctk.CTk):
                 "var": ctk.BooleanVar(value=True),
             })
         self._render_tasks()
+        self._save_queue()
 
     def _scan_finish(self):
         self.btn_scan.configure(state="normal")
@@ -2050,6 +2304,9 @@ class App(ctk.CTk):
                 )
             return
 
+        self._launch_jobs(job_list)
+
+    def _launch_jobs(self, job_list):
         mode = MODE_LABELS.get(self.mode.get(), "orig")
         want_original = mode in ("orig", "both")
         want_pdf = mode in ("pdf", "both")
@@ -2058,31 +2315,36 @@ class App(ctk.CTk):
         video_original = video_dl and self.video_mode.get() == "原件"
         conc = max(1, int(self.jobs.get() or 4))
         auto_skip = bool(self.auto_skip.get())
-        manual = self.cookie.get().strip()
-        cookie = manual or core.firefox_cookie_header() or None
+        cookie, cookie_src = self._resolve_cookie()
 
         for _, _, d, _, _ in job_list:
             os.makedirs(d, exist_ok=True)
 
-        save_settings(
-            {
-                "outdir": self.outdir.get(),
-                "mode": mode,
-                "jobs": conc,
-                "auto_skip": auto_skip,
-                "pdf_fallback": pdf_fallback,
-                "video": video_dl,
-                "video_original": video_original,
-                "cookie": self.cookie.get(),
-                "appearance": self.appearance.get(),
-                "levels": {
-                    "course": bool(self.lv_course.get()),
-                    "source": bool(self.lv_source.get()),
-                    "unit": bool(self.lv_unit.get()),
-                    "chapter": bool(self.lv_chapter.get()),
-                },
-            }
-        )
+        d = load_settings()
+        d.update({
+            "outdir": self.outdir.get(),
+            "mode": mode,
+            "jobs": conc,
+            "auto_skip": auto_skip,
+            "pdf_fallback": pdf_fallback,
+            "video": video_dl,
+            "video_original": video_original,
+            "cookie": self.cookie.get(),
+            "appearance": self.appearance.get(),
+            "accent": self.accent,
+            "scan_cache": bool(self.scan_cache.get()),
+            "levels": {
+                "course": bool(self.lv_course.get()),
+                "source": bool(self.lv_source.get()),
+                "unit": bool(self.lv_unit.get()),
+                "chapter": bool(self.lv_chapter.get()),
+            },
+        })
+        save_settings(d)
+
+        self._failed_jobs = []
+        self.btn_retry.pack_forget()
+        self._save_queue()
 
         self.stop_evt.clear()
         self.total = len(job_list)
@@ -2098,7 +2360,7 @@ class App(ctk.CTk):
         self.log(f"\n共 {len(job_list)} 个文件 → {dirs[0] if len(dirs) == 1 else '多目录'}", "head")
         self.log(f"模式: {self.mode.get()}　并发: {conc}", "dim")
         self.log(
-            "登录态: " + ("手动 Cookie" if manual else ("Firefox Cookie" if cookie else "无"))
+            "登录态: " + (cookie_src or "无")
             + ("" if want_original else "　(仅下载 PDF)")
             + ("" if (want_original or not pdf_fallback) else "，无 PDF 版的下原件"),
             "dim",
@@ -2119,11 +2381,23 @@ class App(ctk.CTk):
         )
         self.worker.start()
 
+    def _retry_failed(self):
+        if not self._failed_jobs:
+            return
+        if self.worker and self.worker.is_alive():
+            return
+        jobs = list(self._failed_jobs)
+        self._failed_jobs = []
+        self.btn_retry.pack_forget()
+        self.log(f"\n重试 {len(jobs)} 个失败项…", "head")
+        self._launch_jobs(jobs)
+
     def _run(self, job_list, want_original, want_pdf, cookie, conc,
              pdf_fallback=False, video_dl=False, video_original=False):
         with ThreadPoolExecutor(max_workers=conc) as ex:
             futs = {}
-            for kind, payload, outdir, hint, overwrite in job_list:
+            for job in job_list:
+                kind, payload, outdir, hint, overwrite = job
                 if self.stop_evt.is_set():
                     break
                 if kind == "data":
@@ -2133,9 +2407,16 @@ class App(ctk.CTk):
                     fut = ex.submit(core.process_one, payload, outdir, want_original,
                                     want_pdf, cookie, self.timeout, overwrite, hint,
                                     pdf_fallback, video_dl, video_original)
-                futs[fut] = payload
+                futs[fut] = job
             for fut in as_completed(futs):
-                self.q.put(("result", fut.result()))
+                job = futs[fut]
+                try:
+                    r = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    r = {"ok": False, "error": str(e), "files": [],
+                         "objectid": job[1], "filename": job[3] or job[1]}
+                r["_job"] = job
+                self.q.put(("result", r))
         self.q.put(("finished", None))
 
     def stop(self):
@@ -2206,6 +2487,9 @@ class App(ctk.CTk):
                 self.log(f"    {note}: {os.path.basename(dest)}　{core.human(size)}", "dim")
         else:
             self.fail += 1
+            job = r.get("_job")
+            if job and job not in self._failed_jobs:
+                self._failed_jobs.append(job)
             self.log(f"✘ {r.get('filename') or r['objectid']}", "err")
             self.log(f"    {r['error']}", "err")
 
@@ -2225,6 +2509,84 @@ class App(ctk.CTk):
             f"\n完成: {parts}，耗时 {time.time() - self.t0:.1f}s", "head"
         )
         self.log(f"目录: {os.path.abspath(self.outdir.get())}", "dim")
+        self._save_queue()
+        if self._failed_jobs:
+            self.btn_retry.configure(text=f"重试失败 ({len(self._failed_jobs)})")
+            self.btn_retry.pack(side="left", padx=(10, 0), before=self.pb)
+            self.log(f"有 {len(self._failed_jobs)} 个失败项，点「重试失败」再试一次", "err")
+        else:
+            self.btn_retry.pack_forget()
+
+    # ---------------- 队列持久化 ----------------
+    def _save_queue(self):
+        """把当前任务列表落盘，关掉程序 / 崩溃后下次还能接着下。"""
+        if not self.tasks:
+            return
+        try:
+            tasks = []
+            for t in self.tasks:
+                row: dict = {}
+                for k, v in t.items():
+                    if k == "var" or k.startswith("_"):
+                        continue          # _rows 是 Tk 控件，不能序列化
+                    if v is None or isinstance(v, (str, int, float, bool)):
+                        row[k] = v
+                row["checked"] = bool(t["var"].get())
+                tasks.append(row)
+            data = {
+                "ts": time.time(),
+                "outdir": self.outdir.get(),
+                "mode": self.mode.get(),
+                "jobs": self.jobs.get(),
+                "levels": {
+                    k: bool(getattr(self, f"lv_{k}").get())
+                    for k in ("course", "source", "unit", "chapter")
+                },
+                "tasks": tasks,
+            }
+            tmp = QUEUE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, QUEUE_FILE)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _restore_queue(self):
+        if self.tasks or (self.worker and self.worker.is_alive()):
+            return
+        try:
+            with open(QUEUE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            raw = data.get("tasks") or []
+            if not raw:
+                return
+            # 保存目录不恢复：落点始终按当前设置（用户可能特意换了目录）
+            if data.get("mode"):
+                self.mode.set(data["mode"])
+            if data.get("jobs"):
+                self.jobs.set(str(data["jobs"]))
+            lv = data.get("levels") or {}
+            for k in ("course", "source", "unit", "chapter"):
+                if k in lv:
+                    getattr(self, f"lv_{k}").set(bool(lv[k]))
+            for t in raw:
+                t.setdefault("bytes", 0)
+                t.setdefault("exists", False)
+                t.setdefault("same", None)
+                t.setdefault("group", "其他")
+                t.setdefault("label", t.get("name") or "")
+                t.setdefault("size", "")
+                t.setdefault("scan_key", "")
+                t["var"] = ctk.BooleanVar(value=bool(t.pop("checked", True)))
+                self.tasks.append(t)
+            self.scan_key = ""          # 旧查重结果是按旧设置算的，不能当当前结果
+            self._render_tasks()
+            ts = float(data.get("ts") or 0)
+            when = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "上次"
+            self.log(f"已恢复上次的下载队列：{len(raw)} 个文件（{when}）", "head")
+            self.lbl.configure(text=f"已恢复 {len(raw)} 个", text_color=pair("primary"))
+        except Exception:  # noqa: BLE001
+            pass
 
     def _on_close(self):
         busy = (self.worker and self.worker.is_alive()) or (
@@ -2234,6 +2596,7 @@ class App(ctk.CTk):
             if not messagebox.askokcancel("正在忙", "还有任务在跑，确定要退出吗？"):
                 return
             self.stop_evt.set()
+        self._save_queue()
         self.destroy()
 
 

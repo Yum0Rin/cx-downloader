@@ -84,7 +84,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
-__version__ = "1.2.3"
+__version__ = "1.3.0"
 GITHUB_REPO = "Yum0Rin/cx-downloader"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"
@@ -901,6 +901,38 @@ def parse_attachments(page: str) -> list[dict]:
     return out
 
 
+SCAN_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cx_download_cache")
+SCAN_CACHE_TTL = 10 * 60          # 10 分钟内重复扫同一门课直接复用
+
+
+def _scan_cache_file(key: str) -> str:
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(SCAN_CACHE_DIR, f"scan-{digest}.json")
+
+
+def load_scan_cache(key: str, ttl: int = SCAN_CACHE_TTL) -> dict | None:
+    """读扫描缓存；过期 / 损坏都当作没有。"""
+    try:
+        with open(_scan_cache_file(key), encoding="utf-8") as f:
+            data = json.load(f)
+        if time.time() - float(data.get("ts") or 0) > ttl:
+            return None
+        result = data.get("result")
+        return result if isinstance(result, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def save_scan_cache(key: str, result: dict) -> None:
+    try:
+        os.makedirs(SCAN_CACHE_DIR, exist_ok=True)
+        with open(_scan_cache_file(key), "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time(), "result": result}, f,
+                      ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def fetch_chapter_attachments(cookie: str | None, courseid: str, clazzid: str,
                               cpi: str, kid: str, timeout: int = 60,
                               max_cards: int = 20) -> list[dict]:
@@ -941,8 +973,13 @@ def fetch_chapter_attachments(cookie: str | None, courseid: str, clazzid: str,
 
 
 def scan_course(cookie: str | None, url: str, timeout: int = 60,
-                progress=None) -> dict:
-    """扫一门课，返回 {name, courseid, files:[{objectid,name,chapter,unit,...}]}。"""
+                progress=None, use_cache: bool = True,
+                workers: int = 4) -> dict:
+    """扫一门课，返回 {name, courseid, files:[{objectid,name,chapter,unit,...}]}。
+
+    use_cache=True 时，10 分钟内扫过的同一门课直接读本地缓存（学习通重新登录 /
+    老师刚传文件时用 GUI 里的「重新扫描」或关掉缓存）。章节的卡片请求会并发。
+    """
     info = parse_course_url(url)
     if not info:
         raise RuntimeError("不是可识别的课程页链接（URL 里需要 courseid 与 clazzid）")
@@ -950,6 +987,16 @@ def scan_course(cookie: str | None, url: str, timeout: int = 60,
     def say(msg: str) -> None:
         if progress:
             progress(msg)
+
+    cache_key = "|".join([info["courseid"], info["clazzid"], info.get("cpi") or "",
+                          info.get("enc") or ""])
+    if use_cache:
+        cached = load_scan_cache(cache_key)
+        if cached:
+            n = len(cached.get("files") or [])
+            say(f"用扫描缓存：{n} 个附件（10 分钟内扫过；要拿最新列表请再点一次「扫描」"
+                f"或到设置里关掉缓存）")
+            return cached
 
     name = fetch_course_name(cookie, url, timeout) or f"超星课程-{info['courseid']}"
     say(f"课程：{name}")
@@ -959,21 +1006,24 @@ def scan_course(cookie: str | None, url: str, timeout: int = 60,
     say(f"章节：{len(chapters)} 个，开始逐章找附件…")
 
     files: list[dict] = []
-    for i, ch in enumerate(chapters, 1):
-        try:
-            atts = fetch_chapter_attachments(
-                cookie, info["courseid"], info["clazzid"], info["cpi"],
-                ch["kid"], timeout,
-            )
-        except Exception as e:  # noqa: BLE001
-            say(f"  [{i}/{len(chapters)}] {ch['title']} 读取失败：{e}")
-            continue
-        for a in atts:
-            a["source"] = "章节"
-            a["chapter"] = ch["title"]
-            a["unit"] = ch["unit"]
-            files.append(a)
-        say(f"  [{i}/{len(chapters)}] {ch['title']} → {len(atts)} 个附件")
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futs = [
+            ex.submit(fetch_chapter_attachments, cookie, info["courseid"],
+                      info["clazzid"], info["cpi"], ch["kid"], timeout)
+            for ch in chapters
+        ]
+        for i, (ch, fut) in enumerate(zip(chapters, futs), 1):
+            try:
+                atts = fut.result()
+            except Exception as e:  # noqa: BLE001
+                say(f"  [{i}/{len(chapters)}] {ch['title']} 读取失败：{e}")
+                continue
+            for a in atts:
+                a["source"] = "章节"
+                a["chapter"] = ch["title"]
+                a["unit"] = ch["unit"]
+                files.append(a)
+            say(f"  [{i}/{len(chapters)}] {ch['title']} → {len(atts)} 个附件")
 
     seen: set[str] = set()
     uniq: list[dict] = []
@@ -982,7 +1032,10 @@ def scan_course(cookie: str | None, url: str, timeout: int = 60,
             continue
         seen.add(f["objectid"])
         uniq.append(f)
-    return {"name": name, "courseid": info["courseid"], "files": uniq}
+    result = {"name": name, "courseid": info["courseid"], "files": uniq}
+    if use_cache:
+        save_scan_cache(cache_key, result)
+    return result
 
 
 # ------------------------------------------------------------ 重复文件判定
