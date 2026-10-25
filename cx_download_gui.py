@@ -1107,8 +1107,8 @@ class App(ctk.CTk):
 
         dlg.update_idletasks()
         scale = ctk.ScalingTracker.get_window_scaling(dlg) or 1.0
-        w = max(540, int(wrap.winfo_reqwidth() / scale) + 28)
-        h = int(wrap.winfo_reqheight() / scale) + 28
+        w = max(540, int(wrap.winfo_reqwidth() / scale))
+        h = int(wrap.winfo_reqheight() / scale)
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 3
         dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
