@@ -926,7 +926,7 @@ class App(ctk.CTk):
     def _open_settings(self):
         dlg = ctk.CTkToplevel(self)
         dlg.title("设置")
-        dlg.configure(fg_color=pair("page"))
+        dlg.configure(fg_color=pair("card"))
         dlg.resizable(False, False)
         dlg.transient(self)
         try:
@@ -935,13 +935,13 @@ class App(ctk.CTk):
             pass
         self._settings_dlg = dlg
 
-        wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
-                            border_width=1, border_color=pair("border"))
-        wrap.pack(fill="both", padx=14, pady=14)
+        # 不再套一层卡片：窗口本身就是背景，内容直接铺开
+        wrap = ctk.CTkFrame(dlg, fg_color="transparent")
+        wrap.pack(fill="both", expand=True)
         ctk.CTkLabel(
             wrap, text="设置", anchor="w", height=26,
             font=ctk.CTkFont(FONT, 15, "bold"), text_color=pair("primary"),
-        ).pack(fill="x", padx=16, pady=(14, 6))
+        ).pack(fill="x", padx=18, pady=(14, 6))
 
         # ---- 主题色 ----
         ctk.CTkLabel(wrap, text="主题色（改完保存，重启后生效）", anchor="w",
@@ -999,12 +999,18 @@ class App(ctk.CTk):
         self.tg_appearance.pack(anchor="w", padx=16, pady=(4, 0))
 
         ctk.CTkSwitch(
-            wrap, text="扫描缓存（10 分钟内重复扫描直接复用；再点一次「扫描」可强制刷新）",
+            wrap, text="扫描结果缓存",
             variable=self.scan_cache, font=ctk.CTkFont(FONT, 12),
             text_color=pair("text"), progress_color=pair("primary"),
             fg_color=pair("input_border"), button_color=("#FFFFFF", "#E4EAF0"),
             button_hover_color=("#FFFFFF", "#FFFFFF"),
-        ).pack(anchor="w", padx=16, pady=(10, 0))
+        ).pack(anchor="w", padx=18, pady=(10, 0))
+        ctk.CTkLabel(
+            wrap, text="记住上次扫到的文件列表；10 分钟内再扫同一门课会直接秒开。"
+                       "想拿最新列表，再点一次「扫描」就行。",
+            anchor="w", justify="left", wraplength=510,
+            font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
+        ).pack(fill="x", padx=18, pady=(2, 0))
 
         # ---- 关于 / 更新 ----
         ctk.CTkLabel(wrap, text="关于", anchor="w",
