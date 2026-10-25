@@ -42,6 +42,12 @@ import cx_download as core  # noqa: E402
 
 SETTINGS = os.path.join(os.path.expanduser("~"), ".cx_download_gui.json")
 QUEUE_FILE = os.path.join(os.path.expanduser("~"), ".cx_download_queue.json")
+
+
+def asset_path(name: str) -> str:
+    """打包后资源在 _MEIPASS 解包目录，源码运行时在仓库根的 assets/。"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", name)
 DEFAULT_OUT = os.path.join(os.path.expanduser("~"), "Downloads", "超星下载")
 
 # ---------------------------------------------------------------- 配色
@@ -837,6 +843,69 @@ class App(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
 
+    def _show_support(self):
+        """设置页角落的「支持作者」：点开并排显示微信 / 支付宝收款码。"""
+        codes = [("微信", asset_path("support-wechat.png")),
+                 ("支付宝", asset_path("support-alipay.png"))]
+        items = [(label, p) for label, p in codes if os.path.isfile(p)]
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("支持作者")
+        dlg.configure(fg_color=pair("page"))
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        try:
+            dlg.after(60, dlg.lift)
+        except Exception:  # noqa: BLE001
+            pass
+
+        wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
+                            border_width=1, border_color=pair("border"))
+        wrap.pack(fill="both", padx=14, pady=14)
+        ctk.CTkLabel(
+            wrap, text="谢谢支持", anchor="w", height=24,
+            font=ctk.CTkFont(FONT, 14, "bold"), text_color=pair("primary"),
+        ).pack(fill="x", padx=16, pady=(12, 2))
+
+        if not items:
+            ctk.CTkLabel(
+                wrap, text="没找到收款码图片（assets/support-*.png）",
+                font=ctk.CTkFont(FONT, 12), text_color=pair("muted"),
+            ).pack(padx=16, pady=12)
+        else:
+            row = ctk.CTkFrame(wrap, fg_color="transparent")
+            row.pack(pady=(6, 10))
+            for label, p in items:
+                col = ctk.CTkFrame(row, fg_color="transparent")
+                col.pack(side="left", padx=10)
+                img = tk.PhotoImage(file=p, master=dlg)
+                if img.width() > 300:
+                    f = max(1, round(img.width() / 300))
+                    img = img.subsample(f)
+                scale = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+                box = ctk.CTkLabel(
+                    col, text="", image=img, fg_color="#FFFFFF",
+                    corner_radius=10,
+                    width=int(img.width() / scale) + 10,
+                    height=int(img.height() / scale) + 10,
+                )
+                box.image = img        # 防止被 GC，图片会空白
+                box.pack()
+                ctk.CTkLabel(
+                    col, text=label, font=ctk.CTkFont(FONT, 12, "bold"),
+                    text_color=pair("text"),
+                ).pack(pady=(6, 0))
+
+        self._btn(wrap, "关闭", dlg.destroy, width=64).pack(pady=(0, 14))
+
+        dlg.update_idletasks()
+        scale = ctk.ScalingTracker.get_window_scaling(dlg) or 1.0
+        w = int(wrap.winfo_reqwidth() / scale) + 28
+        h = int(wrap.winfo_reqheight() / scale) + 28
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 3
+        dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
+
     def _open_settings(self):
         dlg = ctk.CTkToplevel(self)
         dlg.title("设置")
@@ -942,6 +1011,10 @@ class App(ctk.CTk):
         self._btn(row_links, "最新 Release",
                   lambda: webbrowser.open(core.RELEASES_URL), width=104
                   ).pack(side="left", padx=(8, 0))
+        if any(os.path.isfile(asset_path(f)) for f in
+               ("support-wechat.png", "support-alipay.png")):
+            self._btn(row_links, "支持作者", self._show_support,
+                      width=88).pack(side="left", padx=(8, 0))
 
         state = {"done": False, "info": None}
 

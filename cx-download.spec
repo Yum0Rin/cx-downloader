@@ -19,6 +19,12 @@ from PyInstaller.utils.hooks import collect_all
 
 ctk_datas, ctk_binaries, ctk_hidden = collect_all("customtkinter")
 
+# 可选资源（收款码等）：有 assets/ 目录才打进去，没有就跳过
+_datas = list(ctk_datas)
+_assets = os.path.join(SPECPATH, "assets")
+if os.path.isdir(_assets):
+    _datas.append((_assets, "assets"))
+
 # 图标按平台给：Windows 只认 .ico；Linux 的 ELF 没有图标位（忽略即可）；
 # macOS 要 .icns，没有就留空。传错平台的文件 PyInstaller 会直接报错。
 if sys.platform.startswith("win"):
@@ -33,7 +39,7 @@ a = Analysis(
     ["cx_download_gui.py"],
     pathex=[SPECPATH],  # 同目录的 cx_download.py / selftest.py
     binaries=ctk_binaries,
-    datas=ctk_datas,
+    datas=_datas,
     hiddenimports=ctk_hidden + ["selftest"],
     hookspath=[],
     hooksconfig={},

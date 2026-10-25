@@ -2,6 +2,13 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.2] - 2026-10-25
+
+### 新增
+
+- **设置页「支持作者」**：低调放在 GitHub / Release 按钮旁边，点开并排显示
+  微信 / 支付宝收款码；不自动弹窗、不打扰使用。收款码图片放在 `assets/`，打包时一起带上。
+
 ## [1.3.1] - 2026-10-25
 
 ### 修复
@@ -195,6 +202,7 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.3.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.2...v1.2.3
