@@ -851,7 +851,7 @@ class App(ctk.CTk):
 
         wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
                             border_width=1, border_color=pair("border"))
-        wrap.pack(fill="both", expand=True, padx=14, pady=14)
+        wrap.pack(fill="both", padx=14, pady=14)
         ctk.CTkLabel(
             wrap, text="设置", anchor="w", height=26,
             font=ctk.CTkFont(FONT, 15, "bold"), text_color=pair("primary"),
@@ -1008,7 +1008,9 @@ class App(ctk.CTk):
         self._btn(row, "关闭", dlg.destroy, width=64).pack(side="left")
 
         dlg.update_idletasks()
-        w, h = 540, dlg.winfo_reqheight()
+        scale = ctk.ScalingTracker.get_window_scaling(dlg) or 1.0
+        w = max(540, int(wrap.winfo_reqwidth() / scale) + 28)
+        h = int(wrap.winfo_reqheight() / scale) + 28
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 3
         dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
@@ -1072,7 +1074,7 @@ class App(ctk.CTk):
 
         wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
                             border_width=1, border_color=pair("border"))
-        wrap.pack(fill="both", expand=True, padx=14, pady=14)
+        wrap.pack(fill="both", padx=14, pady=14)
         ctk.CTkLabel(
             wrap, text=f"发现新版本 v{info['version']}", anchor="w", height=26,
             font=ctk.CTkFont(FONT, 15, "bold"), text_color=pair("primary"),
@@ -1107,7 +1109,9 @@ class App(ctk.CTk):
         self._btn(row, "忽略此版本", ignore, width=94).pack(side="right", padx=(0, 8))
 
         dlg.update_idletasks()
-        w, h = 580, dlg.winfo_reqheight()
+        scale = ctk.ScalingTracker.get_window_scaling(dlg) or 1.0
+        w = max(580, int(wrap.winfo_reqwidth() / scale) + 28)
+        h = int(wrap.winfo_reqheight() / scale) + 28
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 3
         dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
@@ -1800,7 +1804,7 @@ class App(ctk.CTk):
 
         wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
                             border_width=1, border_color=pair("border"))
-        wrap.pack(fill="both", expand=True, padx=14, pady=14)
+        wrap.pack(fill="both", padx=14, pady=14)
         ctk.CTkLabel(
             wrap, text="选择学习通账号", anchor="w", height=26,
             font=ctk.CTkFont(FONT, 15, "bold"), text_color=pair("primary"),
@@ -1831,7 +1835,9 @@ class App(ctk.CTk):
         self._btn(row, "取消", dlg.destroy, width=64).pack(side="right")
 
         dlg.update_idletasks()
-        w, h = 480, dlg.winfo_reqheight()
+        scale = ctk.ScalingTracker.get_window_scaling(dlg) or 1.0
+        w = max(480, int(wrap.winfo_reqwidth() / scale) + 28)
+        h = int(wrap.winfo_reqheight() / scale) + 28
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 3
         dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
