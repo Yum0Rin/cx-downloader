@@ -5,7 +5,7 @@
 粘贴课程页链接 → 扫描出全部附件 → 勾选要的 → 一键下载。
 **章节任务点**和**「资料」页**两个入口都会扫，本地已下过的自动跳过。
 
-![主界面](docs/screenshot-main.png)
+![主界面](docs/screenshot-main-20261025.png)
 
 ---
 
@@ -144,7 +144,7 @@ Firefox 里读到的所有账号供你挑；也可以直接粘一份新 Cookie�
 
 界面上每个 `ⓘ` 圆圈鼠标悬停都会展开对应的说明，不用记这些。
 
-![登录引导](docs/screenshot-login.png)
+![登录引导](docs/screenshot-login-20261025.png)
 
 ---
 
