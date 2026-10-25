@@ -36,6 +36,7 @@
 | **账号看得见** | 登录态那行显示当前账号姓名；「换号」可列出 Firefox 里读到的多个账号（多 profile / 容器）供你选 |
 | **目录层级可选** | 课程名 / 来源 / 分组 / 章节名，四级自由勾选，实时预览落点 |
 | **命令行版** | `cx_download.py` 只用标准库，可以塞进脚本里 |
+| **更新提醒 + GitHub** | 启动查最新 Release，有新版本时右上角提示并展示更新说明；GitHub 按钮直达项目主页 |
 | **可打包** | 一条 `build.ps1` 出单文件 exe，自带冻结自检 |
 
 ---
@@ -112,11 +113,14 @@ install -Dm644 app_preview.png ~/.local/share/pixmaps/cx-downloader.png   # 可�
 在 Firefox 里打开学习通登录一次就行，之后工具会自动读取它的登录状态。
 （Firefox 的 cookie 是明文存在 `cookies.sqlite` 里的，读起来不需要解密。）
 
-**多个账号**：点 Cookie 右边的「换号」，工具会列出本机 Firefox 里能读到的所有学习通账号
-（不同 profile、或用 Multi-Account Containers 开的容器各算一个），选哪个就用哪个。
-一个 Firefox 配置通常只保留一个号的登录态，想同时存多个号就得开多个 profile / 容器。
-如果列表里没有你刚登录的号，多半是 Cookie 还没写盘 —— 在 Firefox 里刷新一下学习通页面，
-或直接用下面的方式②粘贴 Cookie。
+工具会优先读**运行中的 Firefox**（通过它自带的 Marionette 调试端口），这样连只在
+内存里、还没写进磁盘的登录票据也能拿到，启动后直接显示当前账号。Firefox 没开调试端口时，
+点「换号」里的「让 Firefox 开启实时读取」会重启一次浏览器（标签页会自动恢复）。
+
+**多个账号**：点 Cookie 右边的「换号」，工具会列出能从 Firefox 读到的所有学习通账号
+（运行中浏览器的实时 Cookie，加上各 profile / Multi-Account Containers 容器里的历史 Cookie），
+选哪个就用哪个。一个 Firefox 配置通常只保留一个号的登录态，想同时存多个号需要多个 profile / 容器。
+列表里没有你刚登录的号时，点「让 Firefox 开启实时读取」重启一次浏览器；也可以直接用下面的方式②。
 
 **② 手贴 Cookie（任何浏览器都行，不用装 Firefox）**
 

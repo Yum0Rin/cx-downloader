@@ -615,6 +615,7 @@ class App(ctk.CTk):
         # 本次扫描时的「保存目录 + 层级勾选」，用来判断查重结果是否还有效
         self.scan_key = ""
         self._fx_cookie_count = 0             # 本机 Firefox 里 chaoxing cookie 的条数
+        self._live_cookie = ""                # 从运行中 Firefox 读到的实时 Cookie
         self._account_name = ""               # 当前登录态对应的账号姓名（取不到就是空）
         self._account_pending = False         # 是否已有一个取账号名的后台请求在跑
         self._scan_login_failed = False       # 本次扫描是否因登录态中断
@@ -630,7 +631,9 @@ class App(ctk.CTk):
         self._refresh_firefox_cookies()
         self._update_auth_label()
         self.cookie.trace_add("write", lambda *_: self._update_auth_label())
-        self.after(300, self._fetch_account_name_async)
+        self.after(300, self._probe_live_cookie)
+        self.after(600, self._fetch_account_name_async)
+        self.after(1500, self._check_update_async)
         self.after(100, self._drain)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -737,14 +740,23 @@ class App(ctk.CTk):
 
         left = ctk.CTkFrame(head, fg_color="transparent")
         left.pack(side="left", fill="x", expand=True)
+        title_row = ctk.CTkFrame(left, fg_color="transparent")
+        title_row.pack(anchor="w")
         ctk.CTkLabel(
-            left,
+            title_row,
             text="超星文件下载器",
             font=ctk.CTkFont(FONT, 21, "bold"),
             text_color=pair("text"),
             anchor="w",
             height=28,
-        ).pack(anchor="w")
+        ).pack(side="left")
+        ctk.CTkLabel(
+            title_row,
+            text=f"v{core.__version__}",
+            font=ctk.CTkFont(FONT, 11),
+            text_color=pair("muted"),
+            anchor="w",
+        ).pack(side="left", padx=(8, 0), pady=(6, 0))
         ctk.CTkLabel(
             left,
             text="预览页链接 / objectid / 整门课程页链接 —— 课程页可一次扫出「章节任务点 + 资料页文件」",
@@ -754,6 +766,9 @@ class App(ctk.CTk):
             height=18,
         ).pack(anchor="w")
 
+        self.btn_github = self._btn(head, "GitHub", self._open_github, width=68)
+        self.btn_github.pack(side="right", padx=(10, 0))
+
         self.tg_appearance = ToggleGroup(
             head,
             values=["跟随系统", "浅色", "深色"],
@@ -762,6 +777,112 @@ class App(ctk.CTk):
             selected=(pair("text"), pair("secondary_hover"), ("#FFFFFF", "#16191E")),
         )
         self.tg_appearance.pack(side="right", padx=(10, 0))
+
+        # 有新版时才 pack（见 _on_update）
+        self.btn_update = ctk.CTkButton(
+            head, text="", width=118, height=32, corner_radius=9,
+            font=ctk.CTkFont(FONT, 12), command=self._show_update,
+            fg_color=pair("primary"), hover_color=pair("primary_hover"),
+            text_color=("#FFFFFF", "#FFFFFF"),
+        )
+        self._update_info: dict | None = None
+
+    # ---------------- GitHub / 更新 ----------------
+    def _open_github(self):
+        try:
+            webbrowser.open(core.GITHUB_URL)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _check_update_async(self):
+        def work():
+            try:
+                info = core.check_update()
+            except Exception:  # noqa: BLE001
+                info = None
+            self.q.put(("update", info))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update(self, info):
+        if not info:
+            return
+        self._update_info = info
+        self.btn_update.configure(text=f"更新 v{info['version']}")
+        self.btn_update.pack(side="right", padx=(10, 0))
+        self.log(f"发现新版本 v{info['version']}（当前 v{core.__version__}），"
+                 f"点右上角「更新」查看改了什么", "head")
+        seen = load_settings().get("seen_update") or ""
+        if seen != info["version"]:
+            self.after(400, self._show_update)
+
+    @staticmethod
+    def _plain_md(text: str, limit: int = 4000) -> str:
+        """Release 正文是 Markdown，界面上只显示纯文本。"""
+        t = text or ""
+        t = re.sub(r"^#{1,6}\s*", "", t, flags=re.M)
+        t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)
+        t = re.sub(r"`([^`]*)`", r"\1", t)
+        t = re.sub(r"\[(.+?)\]\((.+?)\)", r"\1", t)
+        t = re.sub(r"^\s*[-*]\s+", "· ", t, flags=re.M)
+        t = re.sub(r"\n{3,}", "\n\n", t).strip()
+        return t[:limit] + ("…" if len(t) > limit else "")
+
+    def _show_update(self):
+        info = getattr(self, "_update_info", None)
+        if not info or not self._update_info:
+            return
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(f"发现新版本 v{info['version']}")
+        dlg.configure(fg_color=pair("page"))
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        try:
+            dlg.after(60, dlg.lift)
+        except Exception:  # noqa: BLE001
+            pass
+
+        wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
+                            border_width=1, border_color=pair("border"))
+        wrap.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(
+            wrap, text=f"发现新版本 v{info['version']}", anchor="w", height=26,
+            font=ctk.CTkFont(FONT, 15, "bold"), text_color=pair("primary"),
+        ).pack(fill="x", padx=16, pady=(14, 2))
+        ctk.CTkLabel(
+            wrap, text=f"当前 v{core.__version__} → 最新 v{info['version']}",
+            anchor="w", font=ctk.CTkFont(FONT, 12), text_color=pair("muted"),
+        ).pack(fill="x", padx=16, pady=(0, 8))
+
+        box = ctk.CTkTextbox(
+            wrap, width=520, height=300, corner_radius=9, border_width=1,
+            border_color=pair("input_border"), fg_color=pair("input"),
+            text_color=pair("text"), font=ctk.CTkFont(FONT, 12), wrap="word",
+        )
+        box.pack(fill="both", expand=True, padx=16)
+        box.insert("1.0", self._plain_md(info.get("body") or "（这个版本没写更新说明）"))
+        box.configure(state="disabled")
+
+        row = ctk.CTkFrame(wrap, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(12, 14))
+        self._btn(row, "打开下载页", lambda: webbrowser.open(info["url"]),
+                  width=110).pack(side="left")
+        self._btn(row, "关闭", dlg.destroy, width=64).pack(side="right")
+
+        def ignore():
+            d = load_settings()
+            d["seen_update"] = info["version"]
+            save_settings(d)
+            self.log(f"已忽略 v{info['version']} 的更新提醒（右上角按钮还在）", "dim")
+            dlg.destroy()
+
+        self._btn(row, "忽略此版本", ignore, width=94).pack(side="right", padx=(0, 8))
+
+        dlg.update_idletasks()
+        w, h = 580, dlg.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 3
+        dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
 
     def _build_input(self, parent):
         card = Card(parent, "① 链接输入（预览页 / objectid / 课程页）")
@@ -1350,6 +1471,8 @@ class App(ctk.CTk):
         manual = self.cookie.get().strip()
         if manual:
             txt, color = f"登录态：手动 Cookie（{len(manual)} 字符）{who}", pair("ok")
+        elif self._live_cookie:
+            txt, color = f"登录态：Firefox 实时{who}", pair("ok")
         elif self._fx_cookie_count:
             txt = (f"登录态：本机 Firefox（{self._fx_cookie_count} 条 chaoxing cookie）{who}")
             color = pair("ok")
@@ -1357,6 +1480,29 @@ class App(ctk.CTk):
             txt = "登录态：无 —— 扫描会拿到登录页，点左边 ⓘ 看怎么弄"
             color = pair("primary")
         self.lbl_auth.configure(text=txt, text_color=color)
+
+    def _probe_live_cookie(self):
+        """启动时读一次运行中 Firefox 的实时 Cookie。
+
+        学习通的登录票据经常只在浏览器内存里（磁盘 cookies.sqlite 里没有），
+        只读磁盘会漏掉「现在登录的号」。读不到就静默回退。
+        """
+        if self.cookie.get().strip():
+            return
+
+        def work():
+            try:
+                groups = core.marionette_cookie_groups()
+                cookie = ""
+                for grp in groups:
+                    if any(r["name"] in ("_uid", "UID") for r in grp):
+                        cookie = core.cookie_header_from_rows(grp)
+                        break
+                self.q.put(("live_cookie", cookie))
+            except Exception:  # noqa: BLE001
+                self.q.put(("live_cookie", ""))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _refresh_firefox_cookies(self):
         try:
@@ -1458,6 +1604,9 @@ class App(ctk.CTk):
         def use(header, label):
             self.cookie.set(header)
             self._account_name = ""
+            if not header:
+                self._live_cookie = ""
+                self._probe_live_cookie()
             self._update_auth_label()
             self.log(f"已切换到：{label}", "ok")
             self._persist_cookie()
@@ -1477,7 +1626,7 @@ class App(ctk.CTk):
         for a in accts:
             name = a.get("name") or "未识别姓名"
             src = a.get("profile_name") or "Firefox"
-            if a.get("ctx"):
+            if a.get("ctx") and not a.get("live"):
                 src += " / 容器"
             label = f"{name} · {src}"
             if a.get("uid"):
@@ -1485,9 +1634,65 @@ class App(ctk.CTk):
             self._btn(body, label, lambda a=a, label=label: use(a["cookie"], label),
                       width=430, anchor="w").pack(fill="x", pady=2)
 
+        if not any(a.get("live") for a in accts) and sys.platform.startswith("win"):
+            self._btn(body, "让 Firefox 开启实时读取（会重启浏览器）",
+                      self._restart_firefox_for_live,
+                      width=430, anchor="w").pack(fill="x", pady=(8, 2))
+
         self._btn(body, "用 Firefox 自动（cookie 最全的那个）",
                   lambda: use("", "Firefox 自动"), width=430,
                   anchor="w").pack(fill="x", pady=(6, 2))
+
+    def _find_firefox_exe(self) -> str:
+        cands = [
+            os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+                         "Mozilla Firefox", "firefox.exe"),
+            os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+                         "Mozilla Firefox", "firefox.exe"),
+        ]
+        for c in cands:
+            if os.path.isfile(c):
+                return c
+        return ""
+
+    def _restart_firefox_for_live(self):
+        """重启 Firefox 并打开 Marionette，好读到只在内存里的登录 Cookie。"""
+        exe = self._find_firefox_exe()
+        if not exe:
+            messagebox.showinfo(
+                "没找到 Firefox",
+                "没找到 firefox.exe。可以手动这样启动它：\n"
+                "firefox.exe --marionette --remote-debugging-port",
+            )
+            return
+        if not messagebox.askokcancel(
+            "需要重启 Firefox",
+            "为了读到「当前登录的账号」，需要让 Firefox 打开调试端口。\n\n"
+            "这会关闭并重开 Firefox：标签页一般会自动恢复，但未提交的输入可能丢失。\n"
+            "继续吗？",
+        ):
+            return
+        try:
+            subprocess.run(["taskkill", "/IM", "firefox.exe"],
+                           capture_output=True, timeout=20)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(2.5)
+        try:
+            subprocess.Popen([exe, "--marionette", "--remote-debugging-port"])
+        except Exception as e:  # noqa: BLE001
+            self.log(f"启动 Firefox 失败：{e}", "err")
+            return
+        self.log("已重开 Firefox，正在读取登录态…", "dim")
+        self.after(4500, self._reload_accounts)
+
+    def _reload_accounts(self):
+        dlg = getattr(self, "_acct_dlg", None)
+        if dlg and dlg.winfo_exists():
+            dlg.destroy()
+        self._live_cookie = ""
+        self._probe_live_cookie()
+        self.switch_account()
 
     def _persist_cookie(self):
         """只把 Cookie 落盘，不碰界面上其它未保存的设置。"""
@@ -1607,10 +1812,13 @@ class App(ctk.CTk):
 
     # ---------------- 扫描 ----------------
     def _resolve_cookie(self) -> tuple[str | None, str]:
-        """定登录态：手填 Cookie 优先，其次借本机 Firefox 的。返回 (cookie, 来源说明)。"""
+        """登录态：手动 Cookie 优先，其次读运行中 Firefox 的实时 Cookie，最后读磁盘。"""
         manual = self.cookie.get().strip()
         if manual:
             return manual, "手动 Cookie"
+        live = getattr(self, "_live_cookie", "")
+        if live:
+            return live, "Firefox 实时"
         fx = core.firefox_cookie_header()
         if fx:
             return fx, "Firefox Cookie"
@@ -1950,6 +2158,16 @@ class App(ctk.CTk):
                     self._update_auth_label()
                 elif kind == "accounts":
                     self._fill_accounts(payload)
+                elif kind == "live_cookie":
+                    if payload and not self.cookie.get().strip():
+                        self._live_cookie = payload
+                        self._update_auth_label()
+                        self._fetch_account_name_async()
+                    elif not payload:
+                        self._live_cookie = ""
+                        self._update_auth_label()
+                elif kind == "update":
+                    self._on_update(payload)
                 elif kind == "scan_files":
                     self._on_scan_files(*payload)
                 elif kind == "need_login":

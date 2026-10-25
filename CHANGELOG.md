@@ -2,6 +2,20 @@
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.3] - 2026-10-24
+
+### 新增
+
+- **Firefox 实时登录态**：学习通的登录票据（`_uid` / `p_auth_token` / `vc3` 等）
+  经常只在浏览器内存里，磁盘 `cookies.sqlite` 里没有。现在会通过 Firefox 自带的
+  Marionette 协议读**运行中浏览器**的 Cookie，启动后自动显示当前登录账号；
+  「换号」里也能列出实时账号（多个窗口 / 容器可对应多个账号）。
+  Firefox 不是以 `--marionette` 启动时，弹窗里有「让 Firefox 开启实时读取」按钮，
+  会重启一次浏览器（标签页会自动恢复）。
+- **更新提醒**：启动后查 GitHub 最新 Release，有新版本时右上角出现「更新 vX.Y.Z」
+  按钮并弹窗展示该版本的更新说明（可「忽略此版本」，以后不再弹）。
+- **GitHub 入口**：右上角 GitHub 按钮，直接打开项目主页。
+
 ## [1.2.2] - 2026-10-24
 
 ### 新增
@@ -149,6 +163,7 @@
 - 可只下原件 / 只下 PDF / 两者都下；落点目录层级四级可选。
 - 一键打包 Windows exe（PyInstaller，自带冻结自检 `--selftest`），GitHub Actions 自动发版。
 
+[1.2.3]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.2...v1.2.0

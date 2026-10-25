@@ -69,6 +69,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -82,6 +83,11 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
+
+__version__ = "1.2.3"
+GITHUB_REPO = "Yum0Rin/cx-downloader"
+GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
+RELEASES_URL = f"{GITHUB_URL}/releases/latest"
 
 OBJECTID_RE = re.compile(r"(?:objectid=)?([0-9a-fA-F]{32})")
 ILLEGAL_RE = re.compile(r'[\\/:*?"<>|\r\n\t]')
@@ -563,18 +569,143 @@ def firefox_cookie_header(profile: str | None = None) -> str:
     return cookie_header_from_rows(rows)
 
 
-def firefox_accounts(timeout: int = 12, probe_names: bool = True) -> list[dict]:
-    """列出本机 Firefox 里能读到的所有学习通账号。
+MARIONETTE_PORT = 2828
 
-    一个 Firefox profile 通常只保留**一个**账号的登录态；想同时存多个号，
-    要么用几个 profile，要么用 Multi-Account Containers（cookie 库里的
-    originAttributes / userContextId 区分）。这里把每个 profile 的每个容器
-    各算一份，用 _uid 去重，再问一次服务器补上姓名。
 
-    返回 [{name, uid, profile, profile_name, ctx, cookie, count}]；
-    读不到完整登录态（没有 _uid）的也列出来，name 为空，界面上显示 UID/来源。
+def _marionette_recv(sock) -> list:
+    buf = b""
+    while b":" not in buf:
+        chunk = sock.recv(1)
+        if not chunk:
+            raise ConnectionError("Marionette 连接已关闭")
+        buf += chunk
+    length, rest = buf.split(b":", 1)
+    size = int(length)
+    data = rest
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ConnectionError("Marionette 连接已关闭")
+        data += chunk
+    return json.loads(data.decode("utf-8"))
+
+
+def _marionette_call(sock, seq: int, name: str, params: dict | None = None):
+    payload = json.dumps([0, seq, name, params or {}],
+                         ensure_ascii=False).encode("utf-8")
+    sock.sendall(str(len(payload)).encode() + b":" + payload)
+    msg = _marionette_recv(sock)
+    if len(msg) > 2 and msg[2]:
+        raise RuntimeError(str(msg[2]))
+    return msg[3]
+
+
+def _cookie_from_marionette(c: dict) -> dict:
+    return {
+        "host": c.get("domain") or "",
+        "name": c.get("name") or "",
+        "value": c.get("value") or "",
+        "path": c.get("path") or "/",
+        "ctx": "live",
+    }
+
+
+def marionette_cookie_groups(port: int = MARIONETTE_PORT,
+                             timeout: float = 8.0) -> list[list[dict]]:
+    """从**正在运行**的 Firefox 读实时 Cookie（需要 Firefox 以 --marionette 启动）。
+
+    学习通的登录票据（_uid / p_auth_token / vc3 等）经常只在 Firefox 内存里，
+    磁盘 cookies.sqlite 里根本没有，所以「识别当前登录的号」必须读活浏览器。
+    Marionette 是 Firefox 自带的调试协议，不需要额外依赖。
+
+    每个浏览上下文（窗口 / 容器）各返回一组 cookie；不同容器可以登录不同账号。
+    读不到（没开 Marionette / 端口被占 / 超时）就返回 []，调用方回退磁盘方案。
     """
-    out: list[dict] = []
+    try:
+        sock = socket.create_connection(("127.0.0.1", port),
+                                        timeout=min(1.5, timeout))
+        sock.settimeout(timeout)
+        _marionette_recv(sock)                       # 握手
+        _marionette_call(sock, 1, "WebDriver:NewSession", {"capabilities": {}})
+    except Exception:  # noqa: BLE001
+        return []
+
+    groups: list[list[dict]] = []
+    seq = 2
+    tmp_window: str | None = None
+    try:
+        handles = _marionette_call(sock, seq, "WebDriver:GetWindowHandles") or []
+        for h in handles:
+            seq += 1
+            _marionette_call(sock, seq, "WebDriver:SwitchToWindow", {"handle": h})
+            seq += 1
+            cookies = _marionette_call(sock, seq, "WebDriver:GetCookies") or []
+            grp = [_cookie_from_marionette(c) for c in cookies
+                   if "chaoxing" in (c.get("domain") or "")]
+            if grp:
+                groups.append(grp)
+        if not groups:
+            # 当前没有学习通标签：临时开一个读一次，读完关掉
+            seq += 1
+            win = _marionette_call(sock, seq, "WebDriver:NewWindow", {"type": "tab"})
+            tmp_window = win.get("handle")
+            seq += 1
+            _marionette_call(sock, seq, "WebDriver:Navigate",
+                             {"url": "https://i.mooc.chaoxing.com/"})
+            time.sleep(1.2)
+            seq += 1
+            cookies = _marionette_call(sock, seq, "WebDriver:GetCookies") or []
+            grp = [_cookie_from_marionette(c) for c in cookies
+                   if "chaoxing" in (c.get("domain") or "")]
+            if grp:
+                groups.append(grp)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        if tmp_window:
+            try:
+                seq += 1
+                _marionette_call(sock, seq, "WebDriver:CloseWindow", {})
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            seq += 1
+            _marionette_call(sock, seq, "WebDriver:DeleteSession", {})
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            sock.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 同一容器的多个标签会读到同一份 cookie，按内容去重
+    uniq: list[list[dict]] = []
+    seen: set[str] = set()
+    for grp in groups:
+        key = ",".join(sorted(f'{r["name"]}={r["value"]}' for r in grp))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(grp)
+    return uniq
+
+
+def firefox_accounts(timeout: int = 12, probe_names: bool = True,
+                     live: bool = True) -> list[dict]:
+    """列出 Firefox 里能读到的所有学习通账号（优先读运行中的浏览器）。
+
+    顺序：先用 Marionette 读活 Cookie（当前登录的号，含只在内存里的票据），
+    再扫磁盘上各 profile / 容器的 Cookie 作为补充（历史登录）。
+    同一个 _uid 只留一份，实时读到的优先。
+
+    返回 [{name, uid, profile_name, ctx, cookie, count, live}]；
+    读不到完整登录态（没有 _uid）的也列出来，name 为空。
+    """
+    groups: list[tuple[str, bool, str, list[dict]]] = []   # 来源名 / 是否实时 / profile / 行
+    if live:
+        for i, grp in enumerate(marionette_cookie_groups()):
+            label = "Firefox 实时" + (f" #{i + 1}" if i else "")
+            groups.append((label, True, "", grp))
     for prof in find_firefox_profiles():
         _, rows = load_firefox_cookies(prof)
         if not rows:
@@ -582,33 +713,45 @@ def firefox_accounts(timeout: int = 12, probe_names: bool = True) -> list[dict]:
         by_ctx: dict[str, list[dict]] = {}
         for r in rows:
             by_ctx.setdefault(r.get("ctx") or "", []).append(r)
+        base = os.path.basename(prof.rstrip("\\/"))
         for ctx, grp in by_ctx.items():
-            header = cookie_header_from_rows(grp)
-            uid = next((r["value"].strip() for r in grp
-                        if r["name"] in ("_uid", "UID") and r["value"].strip()), "")
-            name = ""
-            if probe_names and uid:
-                try:
-                    name = fetch_account_name(header, timeout)
-                except Exception:  # noqa: BLE001
-                    name = ""
-            out.append({
-                "name": name,
-                "uid": uid,
-                "profile": prof,
-                "profile_name": os.path.basename(prof.rstrip("\\/")),
-                "ctx": ctx,
-                "cookie": header,
-                "count": len(grp),
-            })
-    # 同一个号可能在多个 profile / 容器里，各自 cookie 完整度不同：留最全的那份
+            groups.append((base, False, prof, grp))
+
+    out: list[dict] = []
+    for label, is_live, prof, grp in groups:
+        header = cookie_header_from_rows(grp)
+        uid = next((r["value"].strip() for r in grp
+                    if r["name"] in ("_uid", "UID") and r["value"].strip()), "")
+        if not uid:
+            # 没有登录票据的残缺 Cookie 选也没用，不列出来
+            continue
+        name = ""
+        if probe_names:
+            try:
+                name = fetch_account_name(header, timeout)
+            except Exception:  # noqa: BLE001
+                name = ""
+        out.append({
+            "name": name,
+            "uid": uid,
+            "profile": prof,
+            "profile_name": label,
+            "ctx": grp[0].get("ctx") or "",
+            "cookie": header,
+            "count": len(grp),
+            "live": is_live,
+        })
+    # 同一个号可能在多个 profile / 容器 / 实时+磁盘里：实时优先，其次 cookie 最全的
     dedup: dict[str, dict] = {}
     for a in out:
-        key = a["uid"] or f'{a["profile"]}|{a["ctx"]}'
+        key = a["uid"] or f'{a["profile_name"]}|{a["ctx"]}'
         old = dedup.get(key)
-        if old is None or a["count"] > old["count"]:
+        if old is None or (a["live"] and not old["live"]) or (
+                a["live"] == old["live"] and a["count"] > old["count"]):
             dedup[key] = a
-    return sorted(dedup.values(), key=lambda a: (not a["name"], a["name"] or a["uid"]))
+    return sorted(dedup.values(),
+                  key=lambda a: (not a["live"], not a["name"], a["name"] or a["uid"]))
+
 
 
 class LoginRequired(RuntimeError):
@@ -996,6 +1139,40 @@ def describe_object(cookie: str | None, oid: str, timeout: int = 60) -> dict:
         "name": st.get("filename") or f"{oid}.bin",
         "hsize": human(int(st.get("length") or 0)),
         "length": st.get("length"),
+    }
+
+
+def parse_version(v: str) -> tuple[int, ...]:
+    """把 v1.2.3 这种字符串拆成可比较的元组。"""
+    nums = re.findall(r"\d+", v or "")
+    return tuple(int(x) for x in nums[:3]) or (0,)
+
+
+def check_update(current: str | None = None, timeout: int = 6) -> dict | None:
+    """查 GitHub 最新 Release：比当前版本新就返回信息，否则返回 None。
+
+    网络不通 / 被墙 / API 限流都安静地返回 None —— 更新检查不能挡住正常使用。
+    """
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"User-Agent": UA, "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except Exception:  # noqa: BLE001
+        return None
+    tag = str(data.get("tag_name") or "").strip()
+    latest = tag[1:] if tag[:1] in ("v", "V") else tag
+    if not latest or parse_version(latest) <= parse_version(current or __version__):
+        return None
+    return {
+        "version": latest,
+        "tag": tag,
+        "name": data.get("name") or tag,
+        "body": data.get("body") or "",
+        "url": data.get("html_url") or RELEASES_URL,
+        "published_at": data.get("published_at") or "",
     }
 
 
