@@ -45,8 +45,20 @@ cookies.sqlite 复用登录，不用手动复制 Cookie；读不到再用 `--coo
     python cx_download.py --clip
     Get-Clipboard | python cx_download.py
 
+    # 只检查本地（不下载）：按课程名找本地目录，递归比对是否已有
+    python cx_download.py "<课程页链接>" --check-local --local-root "D:\\课程"
+    # 检查后只补缺失的普通文件；视频/安装包/压缩包/大文件要显式 --include-special
+    python cx_download.py "<课程页链接>" --check-local --download-missing
+    # 把检查结果写成 JSON
+    python cx_download.py "<课程页链接>" --check-local --report-json report.json
+
     # 常用选项
     -o, --out DIR      保存目录（默认 ./cx_download）
+    --check-local      只检查本地，不下载
+    --local-root DIR   本地课程根目录（默认同 --out）
+    --download-missing 配合 --check-local：只下缺失的普通文件
+    --include-special  配合 --check-local：特殊/大文件也一起下
+    --large-mb N       大文件阈值（默认 100 MB）
     --pdf              除原文件外，额外下载 PDF
     --pdf-only         只下载 PDF
     --jobs N           并发数（默认 4）
@@ -84,7 +96,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
-__version__ = "1.3.3"
+__version__ = "1.4.0"
 GITHUB_REPO = "Yum0Rin/cx-downloader"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"
@@ -846,6 +858,99 @@ def fetch_course_name(cookie: str | None, url: str, timeout: int) -> str:
     return name
 
 
+def fetch_course_name_robust(cookie: str | None, url: str,
+                             timeout: int = 60) -> str:
+    """取课程名。章节页 <title> 常为空，回退到「资料」页的隐藏 courseName。
+
+    课程主页的 t 参数是会话里的值，自己拼时间戳只会拿到空壳；资料页不需要 t，
+    而且页内直接有 <input id="courseName" value="...">。
+    """
+    name = fetch_course_name(cookie, url, timeout)
+    if name:
+        return name
+    info = parse_course_url(url)
+    if not info:
+        return ""
+    try:
+        q = urllib.parse.urlencode({
+            "courseid": info["courseid"], "clazzid": info["clazzid"],
+            "cpi": info["cpi"], "ut": "s",
+        })
+        page = _get_text(
+            "https://mooc2-ans.chaoxing.com/mooc2-ans/coursedata/stu-datalist?" + q,
+            cookie, timeout, referer="https://mooc2-ans.chaoxing.com/")
+        m = re.search(r'id="courseName"[^>]*value="([^"]*)"', page)
+        if m:
+            return _clean(_html.unescape(m.group(1)))
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def fetch_course_list(cookie: str | None, timeout: int = 60,
+                      include_history: bool = False) -> list[dict]:
+    """取当前账号的全部课程（courseid / clazzid / cpi / name）。
+
+    `backclazzdata` 是学习通自己列表页用的接口，一次返回全部课程；
+    cfid == -1 是「没放进文件夹」的当前课程，其它 cfid 是历史课程文件夹。
+    """
+    url = "https://mooc1-api.chaoxing.com/mycourse/backclazzdata?view=json&rss=1"
+    page = _get_text(url, cookie, timeout, referer="https://i.mooc.chaoxing.com/")
+    try:
+        data = json.loads(page)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"课程列表不是 JSON：{e}") from e
+
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for ch in data.get("channelList") or []:
+        if not include_history and ch.get("cfid") != -1:
+            continue
+        c = ch.get("content") or {}
+        for cd in ((c.get("course") or {}).get("data") or []):
+            cid, clz = cd.get("id"), c.get("id")
+            if not (cid and clz):
+                continue
+            key = (str(cid), str(clz))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "courseid": str(cid),
+                "clazzid": str(clz),
+                "cpi": str(c.get("cpi") or ""),
+                "name": cd.get("name") or "",
+                "beginDate": c.get("beginDate") or "",
+                "endDate": c.get("endDate") or "",
+                "isstart": bool(c.get("isstart")),
+                "isretire": bool(c.get("isretire")),
+            })
+    return out
+
+
+def course_time_status(begin_date: str, end_date: str, now=None) -> str:
+    """按开课/结课时间判断课程状态。日期格式是「2026-08-26 08:22」。"""
+    from datetime import datetime
+
+    now = now or datetime.now()
+    fmt = "%Y-%m-%d %H:%M"
+    try:
+        b = datetime.strptime((begin_date or "").strip(), fmt)
+    except Exception:  # noqa: BLE001
+        b = None
+    try:
+        e = datetime.strptime((end_date or "").strip(), fmt)
+    except Exception:  # noqa: BLE001
+        e = None
+    if b and now < b:
+        return "未开始"
+    if e and now > e:
+        return "已结束"
+    if b or e:
+        return "进行中"
+    return "未知"
+
+
 def fetch_course_chapters(cookie: str | None, courseid: str, clazzid: str,
                           cpi: str, timeout: int = 60) -> list[dict]:
     """取章节列表。返回 [{kid, title, unit}]，unit 是「基础信息 / 教学课件」这类分组名。"""
@@ -974,7 +1079,7 @@ def fetch_chapter_attachments(cookie: str | None, courseid: str, clazzid: str,
 
 def scan_course(cookie: str | None, url: str, timeout: int = 60,
                 progress=None, use_cache: bool = True,
-                workers: int = 4) -> dict:
+                workers: int = 4, name_hint: str | None = None) -> dict:
     """扫一门课，返回 {name, courseid, files:[{objectid,name,chapter,unit,...}]}。
 
     use_cache=True 时，10 分钟内扫过的同一门课直接读本地缓存（学习通重新登录 /
@@ -998,7 +1103,8 @@ def scan_course(cookie: str | None, url: str, timeout: int = 60,
                 f"或到设置里关掉缓存）")
             return cached
 
-    name = fetch_course_name(cookie, url, timeout) or f"超星课程-{info['courseid']}"
+    name = (name_hint or fetch_course_name(cookie, url, timeout)
+            or f"超星课程-{info['courseid']}")
     say(f"课程：{name}")
     chapters = fetch_course_chapters(
         cookie, info["courseid"], info["clazzid"], info["cpi"], timeout
@@ -1182,6 +1288,272 @@ def resolve_course_files(cookie: str | None, files: list[dict], outdir: str,
             if progress:
                 progress(f"校验已存在文件 {done}/{len(pending)}：{f['target']}")
     return files
+
+
+# ------------------------------------------------------------ 本地课程目录查重
+#
+# 以前的查重只看「保存目录 + 层级勾选」算出来的那一个落点。用户手动把课件整理进
+# 知识点/课件讲义、作业、课程文档 之后，层级就对不上，工具会把明明存在的文件标成
+# 新文件。这里改成：先按课程名找到本地已有的课程文件夹，再递归扫整个文件夹。
+
+INSTALLER_EXTS = {
+    ".exe", ".msi", ".dmg", ".pkg", ".iso", ".apk", ".ipa",
+    ".bin", ".img", ".deb", ".rpm",
+}
+ARCHIVE_EXTS = {
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz",
+    ".cab", ".tgz",
+}
+LARGE_BYTES = 100 * 1024 * 1024
+
+
+def _norm_text(s: str) -> str:
+    s = (s or "").replace("\u00a0", " ")
+    s = re.sub(r"[\s_\-（）()【】\[\].,，。·、]+", "", s.lower())
+    return s
+
+
+def _norm_stem(filename: str) -> str:
+    """去掉扩展名和尾部 (1)(2) 这类重复标记，只留主名。"""
+    stem, _ = split_ext(filename or "")
+    stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
+    return _norm_text(stem)
+
+
+def _lcs_len(a: str, b: str) -> int:
+    """最长公共子串长度。课程名常有简称/别名，整串包含匹配不到，用它兜底。"""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for ca in a:
+        cur = [0] * (len(b) + 1)
+        for j, cb in enumerate(b, 1):
+            if ca == cb:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
+def find_local_course_dir(base: str, course_name: str, courseid: str = "") -> str:
+    """在保存根目录下找已有的课程文件夹。
+
+    容忍「261学期 / 2026学年」前缀、括号别名、简称。按最长公共子串打分，
+    分数太低（如两门课只共用一个「课程」）就不硬配。
+    """
+    if not base or not os.path.isdir(base):
+        return ""
+    target = re.sub(r"^(?:\d{3,4}学期|\d{4}学年|\d{4})", "", (course_name or "").strip())
+    tn = _norm_text(target)
+    if not tn:
+        return ""
+    best, best_score = "", 0.0
+    for d in os.listdir(base):
+        p = os.path.join(base, d)
+        if not os.path.isdir(p):
+            continue
+        dn = _norm_text(d)
+        if not dn:
+            continue
+        if tn in dn or dn in tn:
+            return p
+        common = _lcs_len(tn, dn)
+        score = common / max(1, min(len(tn), len(dn)))
+        # 括号里的别名（如「多元统计模型与方法(多元数据分析)」）单独再试一次
+        for alias in re.findall(r"[（(]([^）)]+)[）)]", course_name or ""):
+            an = _norm_text(alias)
+            if an and (an in dn or dn in an):
+                score = max(score, 1.0)
+        if score > best_score:
+            best, best_score = p, score
+    return best if best_score >= 0.30 else ""
+
+
+def collect_local_files(folder: str) -> list[dict]:
+    """递归收集目录下所有文件，层级不限。"""
+    out: list[dict] = []
+    if not folder or not os.path.isdir(folder):
+        return out
+    for base, _dirs, files in os.walk(folder):
+        for name in files:
+            path = os.path.join(base, name)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            out.append({
+                "name": name,
+                "path": path,
+                "size": size,
+                "ext": os.path.splitext(name)[1].lower(),
+            })
+    return out
+
+
+def build_local_index(local_files: list[dict]) -> dict:
+    by_name: dict[str, list[dict]] = {}
+    by_size: dict[int, list[dict]] = {}
+    for f in local_files:
+        by_name.setdefault(_norm_stem(f["name"]), []).append(f)
+        if f["size"]:
+            by_size.setdefault(f["size"], []).append(f)
+    return {"by_name": by_name, "by_size": by_size}
+
+
+def match_local_file(name: str, length: int, index: dict) -> dict:
+    """判断平台文件在本地是否已有。返回 {exists, same, local_path, match}。
+
+    先按主名（去 (1) 后缀、不看扩展名）匹配；主名不中再用精确字节数兜底。
+    同一章 PDF 版与 PPT 源文件主名相同，按「已有」处理，避免重复下载。
+    """
+    key = _norm_stem(name)
+    hit = (index["by_name"].get(key) or [None])[0]
+    if hit:
+        remote_ext = os.path.splitext(name or "")[1].lower()
+        local_ext = hit.get("ext") or ""
+        office = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
+        if local_ext != remote_ext and local_ext in office and remote_ext in office:
+            # 本地是平台 Office 原件转出来的 PDF，内容同一份，别算成「有更新」
+            same = True
+        else:
+            # 主名相同但没取到平台字节数时，按「相同」处理：查重的目的是别重复下，
+            # 宁可放过也不要每次因为拿不到 length 就重下一遍。
+            same = (hit["size"] == length) if length else True
+        return {"exists": True, "same": same, "local_path": hit["path"],
+                "match": "name"}
+    if length and length in index["by_size"]:
+        hit = index["by_size"][length][0]
+        return {"exists": True, "same": True, "local_path": hit["path"],
+                "match": "size"}
+    return {"exists": False, "same": False, "local_path": "", "match": ""}
+
+
+def is_special_file(name: str, length: int = 0,
+                    large_bytes: int = LARGE_BYTES) -> tuple[bool, str]:
+    """视频 / 安装包 / 压缩包 / 大文件。专门提示，别混在普通课件里默认下载。"""
+    ext = os.path.splitext(name or "")[1].lower()
+    if ext in VIDEO_EXTS:
+        return True, "视频"
+    if ext in INSTALLER_EXTS:
+        return True, "安装包"
+    if ext in ARCHIVE_EXTS:
+        return True, "压缩包"
+    if length and large_bytes and length >= large_bytes:
+        return True, f"大文件（{human(length)}）"
+    return False, ""
+
+
+def _file_length(f: dict, cookie: str | None, timeout: int) -> int:
+    if f.get("length"):
+        return int(f.get("length") or 0)
+    try:
+        if f.get("objectid"):
+            return int(fetch_status(f["objectid"], cookie, timeout).get("length") or 0)
+        if f.get("url"):
+            total, _ = remote_probe(f["url"], cookie, timeout)
+            return int(total or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+    return 0
+
+
+def check_local_course(cookie: str | None, url: str, base: str,
+                       timeout: int = 60, progress=None,
+                       large_bytes: int = LARGE_BYTES,
+                       use_cache: bool = True, workers: int = 4) -> dict:
+    """扫描一门课，并对照本地课程文件夹（递归）判断已有/缺失/特殊。
+
+    只读，不下载。返回 {name, local_dir, files, summary}。
+    """
+    info = parse_course_url(url)
+    if not info:
+        raise RuntimeError("不是可识别的课程页链接（URL 里需要 courseid 与 clazzid）")
+
+    def say(msg: str) -> None:
+        if progress:
+            progress(msg)
+
+    name = fetch_course_name_robust(cookie, url, timeout) or f"课程{info['courseid']}"
+    local_dir = find_local_course_dir(base, name, info["courseid"])
+    if local_dir:
+        say(f"本地课程目录：{local_dir}")
+    else:
+        say("本地没找到对应课程目录，按缺失处理")
+
+    files: list[dict] = []
+    try:
+        sc = scan_course(cookie, url, timeout, progress=progress,
+                         use_cache=use_cache, workers=workers, name_hint=name)
+        for f in sc["files"]:
+            f["source"] = "章节"
+            files.append(f)
+    except Exception as e:  # noqa: BLE001
+        say(f"章节扫描失败：{e}")
+    try:
+        for f in scan_course_data(cookie, info["courseid"], info["clazzid"],
+                                  info["cpi"], timeout, progress=progress):
+            f["source"] = "资料"
+            files.append(f)
+    except Exception as e:  # noqa: BLE001
+        say(f"资料扫描失败：{e}")
+
+    local_files = collect_local_files(local_dir)
+    index = build_local_index(local_files)
+    say(f"本地 {local_dir or '（无）'} 下共 {len(local_files)} 个文件")
+
+    # 全部取精确字节数：只知道「本地有没有」不够，还要靠字节数判断本地版本是不是旧的
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futs = {ex.submit(_file_length, f, cookie, timeout): f for f in files}
+        for fut in as_completed(futs):
+            f = futs[fut]
+            try:
+                f["length"] = fut.result()
+            except Exception:  # noqa: BLE001
+                f["length"] = 0
+    for f in files:
+        m = match_local_file(f.get("name") or "", int(f.get("length") or 0), index)
+        f.update(m)
+
+    for f in files:
+        length = int(f.get("length") or parse_hsize(f.get("hsize") or ""))
+        f["length"] = length
+        special, reason = is_special_file(f.get("name") or "", length, large_bytes)
+        f["special"] = special
+        f["special_reason"] = reason
+
+    # 同一附件可能被章节和资料各扫到一次
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for f in files:
+        key = f.get("objectid") or f.get("url") or ""
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        uniq.append(f)
+
+    summary = summarize_check(uniq)
+    return {"name": name, "courseid": info["courseid"],
+            "local_dir": local_dir, "files": uniq, "summary": summary}
+
+
+def summarize_check(files: list[dict]) -> dict:
+    total = len(files)
+    present = sum(1 for f in files if f.get("exists"))
+    same = sum(1 for f in files if f.get("exists") and f.get("same"))
+    missing = total - present
+    updated = present - same
+    special = [f for f in files if f.get("special")]
+    return {
+        "total": total, "present": present, "same": same,
+        "updated": updated, "missing": missing, "special": len(special),
+        "special_names": [f.get("name") for f in special],
+        "missing_names": [f.get("name") for f in files if not f.get("exists")],
+        "updated_names": [f.get("name") for f in files
+                          if f.get("exists") and not f.get("same")],
+    }
 
 
 def describe_object(cookie: str | None, oid: str, timeout: int = 60) -> dict:
@@ -1394,6 +1766,18 @@ def main() -> int:
     p.add_argument("--overwrite", action="store_true", help="强制重下已存在的文件")
     p.add_argument("--no-data", action="store_true", help="课程页只扫章节任务点，不扫「资料」")
     p.add_argument("--timeout", type=int, default=60, help="单请求超时秒数（默认 60）")
+    p.add_argument("--check-local", action="store_true",
+                   help="只检查：按本地课程目录递归比对是否已有，不下载")
+    p.add_argument("--local-root", default=None,
+                   help="本地课程根目录（默认同 --out）")
+    p.add_argument("--download-missing", action="store_true",
+                   help="配合 --check-local：下载缺失的普通文件")
+    p.add_argument("--include-special", action="store_true",
+                   help="配合 --check-local：视频/安装包/压缩包/大文件也一起下载")
+    p.add_argument("--large-mb", type=int, default=100,
+                   help="大文件阈值 MB（默认 100）")
+    p.add_argument("--report-json", default=None,
+                   help="配合 --check-local：把检查结果写成 JSON")
     args = p.parse_args()
 
     raw = collect_inputs(args)
@@ -1416,7 +1800,62 @@ def main() -> int:
         log("        ① 在 Firefox 里登录一次学习通（脚本会自动读它的 cookie）")
         log("        ② 用 --cookie 手动指定浏览器里复制出来的 Cookie 请求头")
 
-    for u in course_urls:
+    if args.check_local:
+        if not course_urls:
+            log("--check-local 需要课程页链接（URL 里要有 courseid / clazzid）")
+            return 2
+        local_root = os.path.abspath(args.local_root or args.out)
+        large = max(1, args.large_mb) * 1024 * 1024
+        reports = []
+        rc = 0
+        for u in course_urls:
+            log(f"\n[检查] {u}")
+            try:
+                rep = check_local_course(cookie, u, local_root, args.timeout,
+                                         progress=lambda m: log("  " + m),
+                                         large_bytes=large)
+            except Exception as e:  # noqa: BLE001
+                log(f"  检查失败：{e}")
+                rc = 1
+                continue
+            reports.append(rep)
+            s = rep["summary"]
+            log(f"  课程：{rep['name']}")
+            log(f"  本地目录：{rep['local_dir'] or '（无）'}")
+            log(f"  平台 {s['total']} 个；已有 {s['present']}（内容相同 {s['same']}）；"
+                f"缺失 {s['missing']}；特殊/大文件 {s['special']}")
+            for f in rep["files"]:
+                if f.get("exists"):
+                    continue
+                tag = "特殊" if f.get("special") else "缺失"
+                extra = f" · {f.get('special_reason')}" if f.get("special") else ""
+                log(f"    [{tag}] {f.get('name')}（{f.get('hsize') or ''}）{extra}")
+            if s["special"] and not args.include_special:
+                log("  提示：特殊/大文件默认不下载；要下请加 --include-special")
+        if args.report_json:
+            with open(args.report_json, "w", encoding="utf-8") as fp:
+                json.dump(reports, fp, ensure_ascii=False, indent=1)
+            log(f"\n检查结果已写入 {args.report_json}")
+        if not args.download_missing:
+            return rc
+        jobs = []
+        for rep in reports:
+            target = rep["local_dir"] or os.path.join(
+                local_root, sanitize(rep["name"], rep["courseid"]))
+            for f in rep["files"]:
+                if f.get("exists"):
+                    continue
+                if f.get("special") and not args.include_special:
+                    continue
+                if f.get("url"):
+                    jobs.append(("data", f["url"], target, f.get("name")))
+                elif f.get("objectid"):
+                    jobs.append(("oid", f["objectid"], target, f.get("name")))
+        if not jobs:
+            log("没有需要下载的缺失文件。")
+            return rc
+
+    for u in ([] if args.check_local else course_urls):
         info = parse_course_url(u)
         if not info:
             continue

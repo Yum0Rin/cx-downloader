@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tkinter import colorchooser, filedialog, messagebox
@@ -536,7 +537,7 @@ class HintIcon(ctk.CTkLabel):
         self.bind("<Leave>", self._drop)
         self.bind("<Button-1>", self._pop)
 
-    def _pop(self, _evt=None):
+    def _pop(self, evt=None):
         self._drop()
         dark = ctk.get_appearance_mode().lower() == "dark"
         bg = "#20252C" if dark else "#FFFFFF"
@@ -581,11 +582,27 @@ class HintIcon(ctk.CTkLabel):
         tip.update_idletasks()
 
         w, h = tip.winfo_reqwidth(), tip.winfo_reqheight()
-        x = self.winfo_rootx() + self.winfo_width() + px(8)
-        y = self.winfo_rooty() - px(8)
-        x = min(x, tip.winfo_screenwidth() - w - px(12))
-        y = min(y, tip.winfo_screenheight() - h - px(12))
-        tip.geometry(f"+{max(px(8), x)}+{max(px(8), y)}")
+        # 指针和 Toplevel geometry 都是物理像素；winfo_screen* 在缩放环境下
+        # 可能是逻辑值，所以屏幕边界直接用系统物理分辨率。
+        try:
+            mx, my = self.winfo_pointerx(), self.winfo_pointery()
+        except Exception:  # noqa: BLE001
+            mx = self.winfo_rootx() + self.winfo_width()
+            my = self.winfo_rooty()
+        try:
+            sw = ctypes.windll.user32.GetSystemMetrics(0)
+            sh = ctypes.windll.user32.GetSystemMetrics(1)
+        except Exception:  # noqa: BLE001
+            sw, sh = tip.winfo_screenwidth(), tip.winfo_screenheight()
+        gap, pad = px(12), px(8)
+        x, y = mx + gap, my + gap
+        if x + w > sw - pad:
+            x = mx - w - gap
+        if y + h > sh - pad:
+            y = my - h - gap
+        x = max(pad, min(x, sw - w - pad))
+        y = max(pad, min(y, sh - h - pad))
+        tip.geometry(f"+{int(x)}+{int(y)}")
         self._tip = tip
 
     def _drop(self, _evt=None):
@@ -595,6 +612,412 @@ class HintIcon(ctk.CTkLabel):
             except Exception:  # noqa: BLE001
                 pass
             self._tip = None
+
+
+class CanvasCourseList(ctk.CTkFrame):
+    """课程选择列表：同样只画可见行，避免 60 门课一次建几百个控件。"""
+
+    def __init__(self, master):
+        super().__init__(master, fg_color=pair("input"), corner_radius=9,
+                         border_width=1, border_color=pair("input_border"))
+        self.items: list[dict] = []
+        self.checked: set[int] = set()
+        self._items: dict[int, list[int]] = {}
+        self._drawn = (None, None)
+        try:
+            self.scale = ctk.ScalingTracker.get_widget_scaling(self) or 1.0
+        except Exception:  # noqa: BLE001
+            self.scale = 1.0
+        self.row_h = max(24, int(30 * self.scale))
+        self.px12 = max(9, int(12 * self.scale))
+        self.px11 = max(8, int(11 * self.scale))
+        self.font12 = tkfont.Font(family=FONT, size=-self.px12)
+        self.font11 = tkfont.Font(family=FONT, size=-self.px11)
+        dark = ctk.get_appearance_mode().lower() == "dark"
+        self.canvas = tk.Canvas(self, bg=pair("input")[1 if dark else 0],
+                                highlightthickness=0, bd=0,
+                                yscrollincrement=self.row_h)
+        self.vsb = ctk.CTkScrollbar(self, command=self._on_scroll)
+        self.canvas.configure(yscrollcommand=self._on_yscroll)
+        self.vsb.pack(side="right", fill="y", padx=(0, 6), pady=6)
+        self.canvas.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        self.canvas.bind("<Configure>", lambda _e: self._layout())
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Button-1>", self._click)
+
+    @staticmethod
+    def _ti() -> int:
+        return 1 if ctk.get_appearance_mode().lower() == "dark" else 0
+
+    def _on_scroll(self, *args):
+        self.canvas.yview(*args)
+        self._redraw()
+
+    def _on_yscroll(self, first, last):
+        self.vsb.set(first, last)
+        self._redraw()
+
+    def _wheel(self, e):
+        if e.delta:
+            self.canvas.yview_scroll(int(-e.delta / 120) * 3, "units")
+        return "break"
+
+    def set_courses(self, items: list[dict], checked: set | None = None):
+        self.items = items
+        # checked 用课程 key，筛选只改显示的子集，已勾的隐藏课程不丢
+        if checked is None:
+            self.checked = {it["key"] for it in items
+                            if it.get("status") == "进行中"}
+        else:
+            self.checked = checked
+        self._clear()
+        self._layout()
+        self._redraw(force=True)
+
+    def set_all(self, flag: bool):
+        keys = {it["key"] for it in self.items}
+        if flag:
+            self.checked.update(keys)
+        else:
+            self.checked.difference_update(keys)
+        self._redraw(force=True)
+
+    def only_active(self):
+        self.checked.clear()
+        self.checked.update(it["key"] for it in self.items
+                            if it.get("status") == "进行中")
+        self._redraw(force=True)
+
+    def selected(self) -> list[dict]:
+        return [it for it in self.items if it["key"] in self.checked]
+
+    def _clear(self):
+        for ids in self._items.values():
+            for it in ids:
+                self.canvas.delete(it)
+        self._items.clear()
+        self._drawn = (None, None)
+
+    def _layout(self):
+        w = max(1, self.canvas.winfo_width())
+        h = max(1, len(self.items) * self.row_h)
+        self.canvas.configure(scrollregion=(0, 0, w, h))
+        self._redraw(force=True)
+
+    @staticmethod
+    def _fit_text(text: str, font, max_px: int) -> str:
+        if max_px <= 0:
+            return ""
+        if font.measure(text) <= max_px:
+            return text
+        s, ell = text, "…"
+        while s and font.measure(s + ell) > max_px:
+            s = s[:-1]
+        return (s + ell) if s else ell
+
+    def _draw_check(self, x, cy, on) -> list[int]:
+        ti = self._ti()
+        s = max(14, int(18 * self.scale))
+        r = max(3, int(4 * self.scale))
+        ids = [round_rect(
+            self.canvas, x, cy - s // 2, x + s, cy + s // 2, r,
+            fill=pair("primary")[ti] if on else pair("input")[ti],
+            outline=pair("input_border")[ti], width=max(1, int(self.scale)))]
+        if on:
+            ids.append(self.canvas.create_line(
+                x + s * 0.22, cy, x + s * 0.45, cy + s * 0.25,
+                x + s * 0.8, cy - s * 0.25, fill="#FFFFFF",
+                width=max(1, int(2 * self.scale)), capstyle="round"))
+        return ids
+
+    def _draw_row(self, idx: int, w: int) -> list[int]:
+        it = self.items[idx]
+        ti = self._ti()
+        y0 = idx * self.row_h
+        cy = y0 + self.row_h // 2
+        ids = self._draw_check(int(18 * self.scale), cy,
+                               it["key"] in self.checked)
+        status = it.get("status") or "未知"
+        color = {"进行中": pair("ok")[ti], "未开始": pair("primary")[ti]}.get(
+            status, pair("muted")[ti])
+        status_x = w - int(360 * self.scale)
+        span_x = w - int(12 * self.scale)
+        name_x = int(52 * self.scale)
+        name = self._fit_text(it.get("name") or "",
+                              self.font12, max(10, status_x - name_x - 8))
+        ids.append(self.canvas.create_text(
+            name_x, cy, anchor="w", text=name,
+            font=self.font12, fill=pair("text")[ti]))
+        ids.append(self.canvas.create_text(
+            status_x, cy, anchor="w", text=status,
+            font=self.font11, fill=color))
+        span = self._fit_text(it.get("span") or "",
+                              self.font11, max(10, span_x - status_x - 64))
+        ids.append(self.canvas.create_text(
+            span_x, cy, anchor="e", text=span,
+            font=self.font11, fill=pair("muted")[ti]))
+        return ids
+
+    def _redraw(self, force: bool = False):
+        top = self.canvas.canvasy(0)
+        view_h = max(1, self.canvas.winfo_height())
+        start = max(0, int(top // self.row_h) - 1)
+        end = min(len(self.items), start + int(view_h // self.row_h) + 3)
+        if force:
+            for idx in list(self._items):
+                for it in self._items.pop(idx):
+                    self.canvas.delete(it)
+        elif (start, end) == self._drawn:
+            return
+        self._drawn = (start, end)
+        for idx in list(self._items):
+            if idx < start or idx >= end:
+                for it in self._items.pop(idx):
+                    self.canvas.delete(it)
+        w = max(1, self.canvas.winfo_width())
+        for idx in range(start, end):
+            if idx not in self._items:
+                self._items[idx] = self._draw_row(idx, w)
+
+    def _click(self, event):
+        idx = int(self.canvas.canvasy(event.y) // self.row_h)
+        if idx < 0 or idx >= len(self.items):
+            return
+        key = self.items[idx]["key"]
+        if key in self.checked:
+            self.checked.discard(key)
+        else:
+            self.checked.add(key)
+        for it in self._items.pop(idx, []):
+            self.canvas.delete(it)
+        self._redraw(force=False)
+        return "break"
+
+
+class CanvasTaskList(ctk.CTkFrame):
+    """单 Canvas 只画可见行：滚动只移动画布，不为每行建控件。
+
+    这是 tksheet 等成熟 Tk 大表格的做法：数据在内存里，画布上只保留
+    视口附近几十行的图形项，滚动时增删边缘行、公共行不动。
+    """
+
+    def __init__(self, master, app):
+        super().__init__(master, fg_color=pair("input"), corner_radius=9,
+                         border_width=1, border_color=pair("input_border"))
+        self.app = app
+        self.rows: list[tuple[str, object]] = []
+        self._items: dict[int, list[int]] = {}
+        self._drawn = (None, None)
+        self._empty_id = None
+        try:
+            self.scale = ctk.ScalingTracker.get_widget_scaling(self) or 1.0
+        except Exception:  # noqa: BLE001
+            self.scale = 1.0
+        self.row_h = max(24, int(30 * self.scale))
+        self.px12 = max(9, int(12 * self.scale))
+        self.px11 = max(8, int(11 * self.scale))
+        self.font12 = tkfont.Font(family=FONT, size=-self.px12)
+        self.font11 = tkfont.Font(family=FONT, size=-self.px11)
+        self.font12b = tkfont.Font(family=FONT, size=-self.px12, weight="bold")
+        dark = ctk.get_appearance_mode().lower() == "dark"
+        self.canvas = tk.Canvas(self, bg=pair("input")[1 if dark else 0],
+                                highlightthickness=0, bd=0,
+                                yscrollincrement=self.row_h)
+        self.vsb = ctk.CTkScrollbar(self, command=self._on_scroll)
+        self.canvas.configure(yscrollcommand=self._on_yscroll)
+        self.vsb.pack(side="right", fill="y", padx=(0, 6), pady=6)
+        self.canvas.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        self.canvas.bind("<Configure>", lambda _e: self._layout())
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Button-1>", self._click)
+
+    @staticmethod
+    def _ti() -> int:
+        return 1 if ctk.get_appearance_mode().lower() == "dark" else 0
+
+    def _on_scroll(self, *args):
+        self.canvas.yview(*args)
+        self._redraw()
+
+    def _on_yscroll(self, first, last):
+        self.vsb.set(first, last)
+        self._redraw()
+
+    def _wheel(self, e):
+        if e.delta:
+            self.canvas.yview_scroll(int(-e.delta / 120) * 3, "units")
+        return "break"
+
+    def set_rows(self, rows, keep_scroll: bool = False):
+        first = self.canvas.yview()[0] if keep_scroll else 0.0
+        self.rows = rows
+        self._clear_items()
+        self._layout()
+        self.canvas.yview_moveto(first)
+        self._redraw(force=True)
+
+    def _layout(self):
+        w = max(1, self.canvas.winfo_width())
+        h = max(1, len(self.rows) * self.row_h)
+        self.canvas.configure(scrollregion=(0, 0, w, h))
+        self._redraw(force=True)
+
+    def _clear_items(self):
+        for items in self._items.values():
+            for it in items:
+                self.canvas.delete(it)
+        self._items.clear()
+        self._drawn = (None, None)
+        if self._empty_id:
+            self.canvas.delete(self._empty_id)
+            self._empty_id = None
+
+    def _draw_check(self, x, cy, on) -> list[int]:
+        ti = self._ti()
+        s = max(14, int(18 * self.scale))
+        r = max(3, int(4 * self.scale))
+        ids = [round_rect(
+            self.canvas, x, cy - s // 2, x + s, cy + s // 2, r,
+            fill=pair("primary")[ti] if on else pair("input")[ti],
+            outline=pair("input_border")[ti], width=max(1, int(self.scale)))]
+        if on:
+            ids.append(self.canvas.create_line(
+                x + s * 0.22, cy, x + s * 0.45, cy + s * 0.25,
+                x + s * 0.8, cy - s * 0.25, fill="#FFFFFF",
+                width=max(1, int(2 * self.scale)), capstyle="round"))
+        return ids
+
+    @staticmethod
+    def _fit_text(text: str, font, max_px: int) -> str:
+        """按像素宽度截断，超长补省略号，别顶到右边的字号/状态列。"""
+        if max_px <= 0:
+            return ""
+        if font.measure(text) <= max_px:
+            return text
+        ell = "…"
+        s = text
+        while s and font.measure(s + ell) > max_px:
+            s = s[:-1]
+        return (s + ell) if s else ell
+
+    def _draw_row(self, idx: int, w: int) -> list[int]:
+        kind, obj = self.rows[idx]
+        ti = self._ti()
+        y0 = idx * self.row_h
+        cy = y0 + self.row_h // 2
+        cbx = int(18 * self.scale) if kind == "group" else int(42 * self.scale)
+        text_x = cbx + int(26 * self.scale)
+        ids: list[int] = []
+        if kind == "group":
+            ids.append(round_rect(
+                self.canvas, 8, y0 + 2, w - 8, y0 + self.row_h - 2,
+                max(5, int(8 * self.scale)),
+                fill=pair("secondary")[ti], outline=""))
+            info = self.app.groups.get(obj, {})
+            members = info.get("members") or []
+            all_on = bool(members) and all(t["var"].get() for t in members)
+            ids.extend(self._draw_check(cbx, cy, all_on))
+            arrow = "▸" if obj in self.app.collapsed else "▾"
+            tail = (f"　{info.get('count', len(members))} 个 · "
+                    f"待下载 {info.get('will', 0)} · 约 "
+                    f"{core.human(info.get('size', 0))}")
+            max_w = (w - int(8 * self.scale)) - text_x
+            head = self._fit_text(
+                f"{arrow} {obj}", self.font12b,
+                max(10, max_w - self.font12b.measure(tail)))
+            ids.append(self.canvas.create_text(
+                text_x, cy, anchor="w", text=head + tail,
+                font=self.font12b, fill=pair("text")[ti]))
+        else:
+            t = obj
+            ids.extend(self._draw_check(cbx, cy, t["var"].get()))
+            size_x = w - int(96 * self.scale)
+            label = self._fit_text(
+                t["label"], self.font12,
+                max(10, size_x - text_x - int(10 * self.scale)))
+            ids.append(self.canvas.create_text(
+                text_x, cy, anchor="w", text=label,
+                font=self.font12, fill=pair("text")[ti]))
+            ids.append(self.canvas.create_text(
+                size_x, cy, anchor="e", text=t["size"],
+                font=self.font11, fill=pair("muted")[ti]))
+            if t["exists"]:
+                state = "已有" if t["same"] else "有更新"
+                color = (pair("ok")[ti] if t["same"]
+                         else ("#B26A00" if ti == 0 else "#F0B35B"))
+            else:
+                state = "缺失"
+                color = "#C03A2B" if ti == 0 else "#EE7B6E"
+            ids.append(self.canvas.create_text(
+                w - int(12 * self.scale), cy, anchor="e", text=state,
+                font=self.font11, fill=color))
+        return ids
+
+    def _redraw(self, force: bool = False):
+        if not self.rows:
+            if force or self._items:
+                self._clear_items()
+            if self._empty_id is None:
+                ti = self._ti()
+                w = max(1, self.canvas.winfo_width())
+                h = max(1, self.canvas.winfo_height())
+                self._empty_id = self.canvas.create_text(
+                    w // 2, h // 2,
+                    text="还没有内容 —— 在上面粘好链接，点「扫描」把文件列出来",
+                    font=self.font12, fill=pair("muted")[ti],
+                    anchor="center")
+            return
+        if self._empty_id:
+            self.canvas.delete(self._empty_id)
+            self._empty_id = None
+        top = self.canvas.canvasy(0)
+        view_h = max(1, self.canvas.winfo_height())
+        start = max(0, int(top // self.row_h) - 1)
+        end = min(len(self.rows), start + int(view_h // self.row_h) + 3)
+        if force:
+            for idx in list(self._items):
+                for it in self._items.pop(idx):
+                    self.canvas.delete(it)
+        elif (start, end) == self._drawn:
+            return
+        self._drawn = (start, end)
+        for idx in list(self._items):
+            if idx < start or idx >= end:
+                for it in self._items.pop(idx):
+                    self.canvas.delete(it)
+        w = max(1, self.canvas.winfo_width())
+        for idx in range(start, end):
+            if idx in self._items:
+                continue
+            self._items[idx] = self._draw_row(idx, w)
+
+    def refresh(self):
+        self._redraw(force=True)
+
+    def restyle(self):
+        dark = ctk.get_appearance_mode().lower() == "dark"
+        self.canvas.configure(bg=pair("input")[1 if dark else 0])
+        self._redraw(force=True)
+
+    def _click(self, event):
+        cy = self.canvas.canvasy(event.y)
+        idx = int(cy // self.row_h)
+        if idx < 0 or idx >= len(self.rows):
+            return
+        x = self.canvas.canvasx(event.x)
+        kind, obj = self.rows[idx]
+        cbx = int(18 * self.scale) if kind == "group" else int(42 * self.scale)
+        hit = cbx <= x <= cbx + int(18 * self.scale)
+        if kind == "group":
+            if hit:
+                self.app._toggle_group_all(obj)
+            else:
+                self.app._toggle_group(obj)
+        else:
+            if hit:
+                obj["var"].set(not obj["var"].get())
+                self.app._update_sel()
+        return "break"
 
 
 class Card(ctk.CTkFrame):
@@ -632,7 +1055,8 @@ class App(ctk.CTk):
         self.title("超星 / 学习通 文件批量下载器")
         self.configure(fg_color=pair("page"))
         self._fit_geometry(1120, 830)
-        self.minsize(900, 600)
+        # 再小就会把底部操作栏 / 左栏卡片挤掉，定个下限
+        self.minsize(900, 680)
 
         cfg = load_settings()
         self.accent = cfg.get("accent") or DEFAULT_ACCENT
@@ -676,6 +1100,10 @@ class App(ctk.CTk):
         self._account_name = ""               # 当前登录态对应的账号姓名（取不到就是空）
         self._account_pending = False         # 是否已有一个取账号名的后台请求在跑
         self._scan_login_failed = False       # 本次扫描是否因登录态中断
+        self._checking_local = False          # 当前这轮是不是「扫描/检查」而不是普通下载
+        self._scanning_all = False            # 当前这轮是不是「全部课程」
+        self._all_reports: list[dict] = []    # 全部课程逐门汇总，最后出总结果
+        self._special_pending: list[dict] = []  # 检查出的特殊/大文件，扫完统一问
         self.total = self.done = self.ok = self.fail = self.skip = 0
         self.t0 = 0.0
         self._last_mode = ""
@@ -764,6 +1192,11 @@ class App(ctk.CTk):
     def _restyle_for_theme(self):
         self._apply_titlebar()
         self._style_log()
+        if getattr(self, "clist", None) is not None:
+            try:
+                self.clist.restyle()
+            except Exception:  # noqa: BLE001
+                pass
         # 选中态是靠变量算出来的，变量被外部改过时这里一并同步
         # 选项态是控件自绘的，跟随外部主题时得手动同步
         for tg in (getattr(self, "tg_appearance", None), getattr(self, "tg_mode", None)):
@@ -777,6 +1210,8 @@ class App(ctk.CTk):
     # ---------------- 界面 ----------------
     def _build(self):
         self._build_header()
+        # 先占住底部操作栏：窗口再往小挤，也先压缩中间内容，不会把按钮挤没
+        self._build_actions(self)
 
         wrap = ctk.CTkFrame(self, fg_color="transparent")
         wrap.pack(fill="both", expand=True, padx=14, pady=(2, 12))
@@ -795,8 +1230,6 @@ class App(ctk.CTk):
 
         self._build_tasks(right)
         self._build_log(right)
-
-        self._build_actions(self)
 
     def _build_header(self):
         head = ctk.CTkFrame(self, fg_color="transparent")
@@ -1448,175 +1881,82 @@ class App(ctk.CTk):
         )
         self.lbl_sel.pack(side="right")
 
-        self.list_box = ctk.CTkScrollableFrame(
-            card,
-            fg_color=pair("input"),
-            corner_radius=9,
-            border_width=1,
-            border_color=pair("input_border"),
-        )
-        self.list_box.pack(fill="both", expand=True, padx=14, pady=(0, 12))
-        self.list_box.grid_columnconfigure(1, weight=1)
-        self.empty_hint = None
-        self._show_empty_hint()
-
-    def _show_empty_hint(self):
-        self.empty_hint = ctk.CTkLabel(
-            self.list_box,
-            text="还没有内容 —— 在上面粘好链接，点「扫描」把文件列出来",
-            font=ctk.CTkFont(FONT, 12),
-            text_color=pair("muted"),
-        )
-        self.empty_hint.grid(row=0, column=0, columnspan=4, pady=26)
+        self.clist = CanvasTaskList(card, self)
+        self.clist.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+        self.groups = {}
+        self.collapsed = set()
+        self._auto_collapse_done = False
 
     def _clear_tasks(self):
-        for w in self.list_box.winfo_children():
-            w.destroy()
         self.tasks = []
-        self.empty_hint = None
         self.groups = {}
+        self.collapsed = set()
+        self._auto_collapse_done = False
+        if hasattr(self, "clist"):
+            self.clist.set_rows([])
         self._update_sel()
         self._update_preview()
 
-    def _render_tasks(self):
-        """按 self.tasks 重建列表：先分组头（章节 / 资料…），再列成员。"""
-        for w in self.list_box.winfo_children():
-            w.destroy()
-        self.empty_hint = None
+    def _build_rows(self, apply_default: bool = True):
+        by_group: dict[str, list[dict]] = {}
+        order: list[str] = []
+        for t in self.tasks:
+            grp = t["group"]
+            if grp not in by_group:
+                by_group[grp] = []
+                order.append(grp)
+            by_group[grp].append(t)
+        # 一次画上千行也不行；大列表默认折叠，展开某组才把它的行放进可见列表
+        if (apply_default and not self._auto_collapse_done
+                and len(self.tasks) > 200):
+            self.collapsed = set(order)
+            self._auto_collapse_done = True
         self.groups = {}
+        rows: list[tuple[str, object]] = []
+        for grp in order:
+            members = by_group[grp]
+            will = [t for t in members if self._will_download(t)]
+            self.groups[grp] = {
+                "members": members,
+                "count": len(members),
+                "will": len(will),
+                "size": sum(t["bytes"] for t in will),
+            }
+            rows.append(("group", grp))
+            if grp not in self.collapsed:
+                rows.extend(("task", t) for t in members)
+        return rows
+
+    def _render_tasks(self, apply_default: bool = True):
+        if not hasattr(self, "clist"):
+            return
         if not self.tasks:
-            self._show_empty_hint()
+            self.groups = {}
+            self.clist.set_rows([])
             self._update_sel()
             self._update_preview()
             return
-
-        order: list[str] = []
-        for t in self.tasks:
-            if t["group"] not in order:
-                order.append(t["group"])
-
-        r = 0
-        for grp in order:
-            members = [t for t in self.tasks if t["group"] == grp]
-            self._add_group_row(r, grp, members)
-            r += 1
-            for t in members:
-                t["_rows"] = self._add_task_row(r, t)
-                r += 1
-        self._apply_group_visibility()
+        self.clist.set_rows(self._build_rows(apply_default))
         self._update_sel()
         self._update_preview()
 
-    def _add_group_row(self, i: int, grp: str, members: list[dict]):
-        """分组头：整行做成一条可点折叠的横条，组勾选框放在横条**里面**。
-
-        勾选框不能单独占第 0 列 —— 那一列的宽度会被下面的子行（缩进过）撑开，
-        结果就是勾选框贴着左边、横条却从很靠右的地方开始，看着像两段缩进。
-        """
-        bar = ctk.CTkFrame(self.list_box, fg_color=pair("secondary"), corner_radius=8)
-        bar.grid(row=i, column=0, columnspan=4, sticky="ew", padx=(8, 8), pady=(10, 2))
-
-        var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
-            bar, text="", width=24, height=24,
-            checkbox_width=18, checkbox_height=18, corner_radius=5,
-            variable=var, command=lambda g=grp: self._toggle_group_all(g),
-            fg_color=pair("primary"), hover_color=pair("primary_hover"),
-            border_color=pair("input_border"), checkmark_color="#FFFFFF",
-        ).pack(side="left", padx=(10, 0), pady=3)
-
-        lbl = ctk.CTkLabel(
-            bar, text="", anchor="w",
-            font=ctk.CTkFont(FONT, 12, "bold"), text_color=pair("text"),
-        )
-        lbl.pack(side="left", fill="x", expand=True, padx=(10, 12), pady=3)
-
-        # 点横条 = 折叠/展开；勾选框自己处理自己的点击
-        for w in (bar, lbl):
-            w.bind("<Button-1>", lambda e, g=grp: self._toggle_group(g))
-            w.bind("<Enter>", lambda e, b=bar: b.configure(fg_color=pair("secondary_hover")))
-            w.bind("<Leave>", lambda e, b=bar: b.configure(fg_color=pair("secondary")))
-        self.groups[grp] = {"var": var, "lbl": lbl, "bar": bar, "members": members}
-
-    def _add_task_row(self, i: int, t: dict) -> list:
-        """一行文件。返回该行所有控件，折叠时要靠它们整行收起。"""
-        ws: list = []
-        cb = ctk.CTkCheckBox(
-            self.list_box, text="", width=24, height=24,
-            checkbox_width=18, checkbox_height=18, corner_radius=5,
-            variable=t["var"], command=self._update_sel,
-            fg_color=pair("primary"), hover_color=pair("primary_hover"),
-            border_color=pair("input_border"), checkmark_color="#FFFFFF",
-        )
-        cb.grid(row=i, column=0, sticky="w", padx=(32, 0), pady=3)
-        ws.append(cb)
-
-        lbl = ctk.CTkLabel(
-            self.list_box, text=t["label"], anchor="w",
-            font=ctk.CTkFont(FONT, 12), text_color=pair("text"),
-        )
-        lbl.grid(row=i, column=1, sticky="ew", padx=8)
-        ws.append(lbl)
-
-        sz = ctk.CTkLabel(
-            self.list_box, text=t["size"], anchor="e", width=74,
-            font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
-        )
-        sz.grid(row=i, column=2, sticky="e")
-        ws.append(sz)
-
-        if t["exists"]:
-            state, color = ("内容相同", pair("ok")) if t["same"] else ("内容不同", pair("primary"))
-        else:
-            state, color = "新文件", pair("muted")
-        st = ctk.CTkLabel(
-            self.list_box, text=state, anchor="e", width=62,
-            font=ctk.CTkFont(FONT, 11), text_color=color,
-        )
-        st.grid(row=i, column=3, sticky="e", padx=(8, 8))
-        ws.append(st)
-        return ws
-
-    # ---------------- 分组折叠 ----------------
     def _toggle_group(self, grp: str):
         if grp in self.collapsed:
             self.collapsed.discard(grp)
         else:
             self.collapsed.add(grp)
-        self._apply_group_visibility()
-        self._paint_groups()
+        self.clist.set_rows(self._build_rows(apply_default=False), keep_scroll=True)
+        self._update_sel()
 
     def _toggle_group_all(self, grp: str):
-        """组级勾选框：全选 / 全不选这一组。"""
+        """组级勾选：全选 / 全不选这一组。"""
         members = [t for t in self.tasks if t["group"] == grp]
         target = not all(t["var"].get() for t in members)
         for t in members:
             t["var"].set(target)
         self._update_sel()
 
-    def _apply_group_visibility(self):
-        for t in self.tasks:
-            show = t["group"] not in self.collapsed
-            for w in t.get("_rows", []):
-                if show:
-                    w.grid()          # 无参调用 = 还原上次的 grid 配置
-                else:
-                    w.grid_remove()   # 行会跟着塌掉
-
-    def _paint_groups(self):
-        for grp, info in self.groups.items():
-            members = info["members"]
-            sel = sum(1 for t in members if t["var"].get())
-            will = [t for t in members if self._will_download(t)]
-            size = sum(t["bytes"] for t in will)
-            arrow = "▸" if grp in self.collapsed else "▾"
-            info["lbl"].configure(
-                text=f"{arrow} {grp}　{len(members)} 个 · 待下载 {len(will)} · 约 {core.human(size)}"
-            )
-            info["var"].set(bool(members) and sel == len(members))
-
     def _will_download(self, t: dict) -> bool:
-        """这一项本次会不会真的下载（跳过规则与 _collect_jobs 保持一致）。"""
         if not t["var"].get():
             return False
         if t["exists"] and t["same"] and self.auto_skip.get():
@@ -1642,21 +1982,37 @@ class App(ctk.CTk):
             text=(f"已选 {len(sel)}/{total}　待下载 {len(will)} 个　约 {core.human(nbytes)}"
                   if total else "")
         )
-        self._paint_groups()
+        for info in self.groups.values():
+            members = info["members"]
+            w2 = [t for t in members if self._will_download(t)]
+            info["count"] = len(members)
+            info["will"] = len(w2)
+            info["size"] = sum(t["bytes"] for t in w2)
+        if hasattr(self, "clist"):
+            self.clist.refresh()
         self._update_count()
         if self.tasks:
-            self.after(800, self._save_queue)
+            if getattr(self, "_save_queue_after", None):
+                try:
+                    self.after_cancel(self._save_queue_after)
+                except Exception:  # noqa: BLE001
+                    pass
+            self._save_queue_after = self.after(800, self._save_queue)
 
     def _build_actions(self, parent):
         row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", pady=(10, 8))
+        row.pack(side="bottom", fill="x", pady=(10, 8))
 
+        scan_box = ctk.CTkFrame(
+            row, fg_color=pair("secondary"), corner_radius=11, height=40,
+        )
+        scan_box.pack(side="left")
         self.btn_scan = ctk.CTkButton(
-            row,
+            scan_box,
             text="扫描",
-            width=104,
-            height=40,
-            corner_radius=11,
+            width=78,
+            height=36,
+            corner_radius=9,
             font=ctk.CTkFont(FONT, 13, "bold"),
             fg_color=pair("secondary"),
             hover_color=pair("secondary_hover"),
@@ -1664,7 +2020,36 @@ class App(ctk.CTk):
             text_color_disabled=pair("muted"),
             command=self.scan,
         )
-        self.btn_scan.pack(side="left")
+        self.btn_scan.pack(side="left", padx=(4, 0), pady=2)
+        HintIcon(
+            scan_box,
+            "扫描：检查输入框里的课程链接（递归查本地，按课程名找本地文件夹比对）。",
+        ).pack(side="left", padx=(0, 6))
+
+        # 「扫描全部课程」按账号列课程，勾选后批量检查，特殊/大文件单独问
+        all_box = ctk.CTkFrame(
+            row, fg_color=pair("secondary"), corner_radius=11, height=40,
+        )
+        all_box.pack(side="left", padx=(10, 0))
+        self.btn_check = ctk.CTkButton(
+            all_box,
+            text="扫描全部课程",
+            width=108,
+            height=36,
+            corner_radius=9,
+            font=ctk.CTkFont(FONT, 13, "bold"),
+            fg_color=pair("secondary"),
+            hover_color=pair("secondary_hover"),
+            text_color=pair("text"),
+            text_color_disabled=pair("muted"),
+            command=self.scan_all,
+        )
+        self.btn_check.pack(side="left", padx=(4, 0), pady=2)
+        HintIcon(
+            all_box,
+            "扫描全部课程：列出账号全部课程（按开课时间排序、标进行中/未开始/已结束），\n"
+            "勾选后逐门检查已有/有更新/缺失；特殊/大文件单独成组并询问。",
+        ).pack(side="left", padx=(0, 6))
 
         self.btn_start = ctk.CTkButton(
             row,
@@ -2251,6 +2636,8 @@ class App(ctk.CTk):
         self.scan_key = self._dir_key()
 
         self._clear_tasks()
+        self._checking_local = False
+        self._special_pending = []
         self.btn_scan.configure(state="disabled")
         self.btn_start.configure(state="disabled")
         self.lbl.configure(text="扫描中…", text_color=pair("muted"))
@@ -2266,20 +2653,280 @@ class App(ctk.CTk):
         )
         self.scan_worker.start()
 
+    def scan_all(self):
+        """一键扫描：先列出账号全部课程，让用户勾选，再逐门检查。"""
+        if self.scan_worker and self.scan_worker.is_alive():
+            return
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo("提示", "正在下载，等下载结束再扫描。")
+            return
+        cookie, src = self._resolve_cookie()
+        if not cookie:
+            self.log("登录态：无 —— 列出全部课程需要登录，已弹出获取说明", "err")
+            self._update_auth_label()
+            self._show_login_help()
+            return
+        self.btn_scan.configure(state="disabled")
+        self.btn_check.configure(state="disabled")
+        self.btn_start.configure(state="disabled")
+        self.lbl.configure(text="读取课程列表…", text_color=pair("muted"))
+        self.log("\n读取账号全部课程…", "head")
+        self.log(f"登录态: {src}", "dim")
+        self.scan_worker = threading.Thread(
+            target=self._run_list_courses, args=(cookie,), daemon=True)
+        self.scan_worker.start()
+
+    def _run_list_courses(self, cookie):
+        try:
+            courses = core.fetch_course_list(cookie, self.timeout,
+                                             include_history=True)
+            self.q.put(("course_list", courses))
+        except core.LoginRequired:
+            self.q.put(("need_login", None))
+            self.q.put(("scan_done", None))
+        except Exception as e:  # noqa: BLE001
+            self.q.put(("scan_log", (f"读取课程列表失败：{e}", "err")))
+            self.q.put(("scan_done", None))
+
+    def _on_course_list(self, courses):
+        self.btn_scan.configure(state="normal")
+        self.btn_check.configure(state="normal")
+        self.btn_start.configure(state="normal")
+        self.lbl.configure(text="就绪", text_color=pair("muted"))
+        if not courses:
+            messagebox.showinfo("没有课程", "账号里没读到课程，检查登录态后再试。")
+            return
+        self._open_course_picker(courses)
+
+    def _open_course_picker(self, courses):
+        """列出全部课程：状态 + 开课时间，按开课时间排序，勾选后检查。"""
+        def sort_key(c):
+            b = c.get("beginDate") or ""
+            return (not bool(b), b)
+
+        courses = sorted(courses, key=sort_key)
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("选择要检查的课程")
+        dlg.configure(fg_color=pair("page"))
+        dlg.transient(self)
+        try:
+            dlg.after(60, dlg.lift)
+        except Exception:  # noqa: BLE001
+            pass
+
+        wrap = ctk.CTkFrame(dlg, fg_color=pair("card"), corner_radius=12,
+                            border_width=1, border_color=pair("border"))
+        wrap.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(
+            wrap, text=f"账号共 {len(courses)} 门课（按开课时间排序）", anchor="w",
+            font=ctk.CTkFont(FONT, 15, "bold"), text_color=pair("primary"),
+        ).pack(fill="x", padx=16, pady=(12, 2))
+        ctk.CTkLabel(
+            wrap, text="默认勾选「进行中」的课程；未开始/已结束的按需勾选。",
+            anchor="w", font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
+        ).pack(fill="x", padx=16, pady=(0, 6))
+
+        all_items = []
+        for c in courses:
+            status = core.course_time_status(c.get("beginDate"), c.get("endDate"))
+            span = f"{c.get('beginDate') or '—'} ~ {c.get('endDate') or '—'}"
+            all_items.append({
+                "key": f"{c.get('courseid')}_{c.get('clazzid')}",
+                "name": c.get("name") or f"课程{c.get('courseid')}",
+                "status": status, "span": span, "course": c,
+            })
+        checked = {it["key"] for it in all_items if it["status"] == "进行中"}
+
+        filt = ctk.CTkFrame(wrap, fg_color="transparent")
+        filt.pack(fill="x", padx=16, pady=(0, 2))
+
+        def mk_entry():
+            return ctk.CTkEntry(
+                filt, width=96, height=28, corner_radius=8,
+                border_width=1, border_color=pair("input_border"),
+                fg_color=pair("input"), text_color=pair("text"),
+                placeholder_text="YYYY-MM-DD",
+                placeholder_text_color=pair("muted"),
+                font=ctk.CTkFont(FONT, 11),
+            )
+
+        ctk.CTkLabel(filt, text="开课日期", font=ctk.CTkFont(FONT, 11),
+                     text_color=pair("muted"), height=28).pack(side="left")
+        ent_b1 = mk_entry(); ent_b1.pack(side="left", padx=(6, 2))
+        ctk.CTkLabel(filt, text="~", font=ctk.CTkFont(FONT, 11),
+                     text_color=pair("muted")).pack(side="left")
+        ent_b2 = mk_entry(); ent_b2.pack(side="left", padx=(2, 10))
+
+        self.end_filter_on = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            filt, text="结束日期", variable=self.end_filter_on,
+            command=lambda: on_end_toggle(), width=80,
+            font=ctk.CTkFont(FONT, 11), text_color=pair("text"),
+            checkbox_width=16, checkbox_height=16, corner_radius=4,
+            fg_color=pair("primary"), hover_color=pair("primary_hover"),
+            border_color=pair("input_border"), checkmark_color="#FFFFFF",
+        ).pack(side="left")
+        ent_e1 = mk_entry(); ent_e1.pack(side="left", padx=(6, 2))
+        ctk.CTkLabel(filt, text="~", font=ctk.CTkFont(FONT, 11),
+                     text_color=pair("muted")).pack(side="left")
+        ent_e2 = mk_entry(); ent_e2.pack(side="left", padx=(2, 10))
+        ent_e1.configure(state="disabled"); ent_e2.configure(state="disabled")
+
+        bar = ctk.CTkFrame(wrap, fg_color="transparent")
+        bar.pack(fill="x", padx=16, pady=(0, 4))
+        clist = CanvasCourseList(wrap)
+        clist.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        clist.set_courses(all_items, checked)
+        lbl_filter = ctk.CTkLabel(
+            filt, text=f"显示 {len(all_items)}/{len(all_items)} 门", height=28,
+            font=ctk.CTkFont(FONT, 10), text_color=pair("muted"),
+        )
+        lbl_filter.pack(side="right")
+
+        def on_end_toggle():
+            st = "normal" if self.end_filter_on.get() else "disabled"
+            ent_e1.configure(state=st)
+            ent_e2.configure(state=st)
+
+        def valid_date(d):
+            return not d or re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) is not None
+
+        def apply_filter():
+            b1, b2 = ent_b1.get().strip(), ent_b2.get().strip()
+            e1, e2 = ent_e1.get().strip(), ent_e2.get().strip()
+            if not all(valid_date(x) for x in (b1, b2, e1, e2)):
+                messagebox.showwarning("日期格式", "日期请填 YYYY-MM-DD，或留空。")
+                return
+            use_end = self.end_filter_on.get()
+            subset = []
+            for it in all_items:
+                c = it["course"]
+                b = (c.get("beginDate") or "")[:10]
+                e = (c.get("endDate") or "")[:10]
+                if b1 and (not b or b < b1):
+                    continue
+                if b2 and (not b or b > b2):
+                    continue
+                if use_end:
+                    if e1 and (not e or e < e1):
+                        continue
+                    if e2 and (not e or e > e2):
+                        continue
+                subset.append(it)
+            clist.set_courses(subset, checked)
+            lbl_filter.configure(text=f"显示 {len(subset)}/{len(all_items)} 门")
+
+        def reset_filter():
+            for en in (ent_b1, ent_b2, ent_e1, ent_e2):
+                en.delete(0, "end")
+            self.end_filter_on.set(False)
+            on_end_toggle()
+            clist.set_courses(all_items, checked)
+            lbl_filter.configure(text=f"显示 {len(all_items)}/{len(all_items)} 门")
+
+        self._btn(filt, "筛选", apply_filter, width=52).pack(side="left", padx=(6, 0))
+        self._btn(filt, "重置", reset_filter, width=52).pack(side="left", padx=4)
+
+        def set_all(flag):
+            clist.set_all(bool(flag))
+
+        def only_active():
+            clist.only_active()
+
+        self._btn(bar, "全选", lambda: set_all(True), width=62).pack(side="left")
+        self._btn(bar, "全不选", lambda: set_all(False), width=72).pack(side="left", padx=6)
+        self._btn(bar, "只选进行中", only_active, width=96).pack(side="left")
+
+        foot = ctk.CTkFrame(wrap, fg_color="transparent")
+        foot.pack(fill="x", padx=16, pady=(0, 12))
+        self._btn(foot, "取消", dlg.destroy, width=64).pack(side="right")
+        go = ctk.CTkButton(
+            foot, text="开始检查", width=120, height=34, corner_radius=9,
+            font=ctk.CTkFont(FONT, 12, "bold"),
+            fg_color=pair("primary"), hover_color=pair("primary_hover"),
+            text_color="#FFFFFF",
+        )
+        go.pack(side="right", padx=(0, 8))
+
+        def start():
+            # 只检查当前筛选后仍可见、且被勾选的课程
+            chosen = [it["course"] for it in clist.items
+                      if it["key"] in checked]
+            if not chosen:
+                messagebox.showwarning("没选课程", "至少勾选一门课。")
+                return
+            dlg.destroy()
+            self._start_course_check(chosen)
+
+        go.configure(command=start)
+
+        w, h = 980, 720
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + max(20, (self.winfo_height() - h) // 3)
+        dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
+
+    def _start_course_check(self, courses):
+        cookie, src = self._resolve_cookie()
+        if not cookie:
+            self.log("登录态：无 —— 检查课程需要登录，已弹出获取说明", "err")
+            self._show_login_help()
+            return
+        base = os.path.abspath(self.outdir.get())
+        self.scan_key = self._dir_key()
+        self._clear_tasks()
+        self._checking_local = True
+        self._scanning_all = True
+        self._all_reports = []
+        self._special_pending = []
+        self.btn_scan.configure(state="disabled")
+        self.btn_check.configure(state="disabled")
+        self.btn_start.configure(state="disabled")
+        self.lbl.configure(text=f"检查 {len(courses)} 门课…", text_color=pair("muted"))
+        self.log(f"\n开始检查 {len(courses)} 门课", "head")
+        self.log(f"登录态: {src}", "dim")
+        self.scan_worker = threading.Thread(
+            target=self._run_scan_all, args=(courses, cookie, base), daemon=True)
+        self.scan_worker.start()
+
+    def _run_scan_all(self, courses, cookie, base):
+        def say(msg, tag="dim"):
+            self.q.put(("scan_log", (msg, tag)))
+
+        try:
+            for i, c in enumerate(courses, 1):
+                name = c.get("name") or f"课程{c.get('courseid')}"
+                say(f"[{i}/{len(courses)}] {name}", "head")
+                url = ("https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse?"
+                       f"courseid={c.get('courseid')}&clazzid={c.get('clazzid')}"
+                       f"&cpi={c.get('cpi')}&ut=s")
+                try:
+                    rep = core.check_local_course(
+                        cookie, url, base, self.timeout, progress=lambda m: say(m))
+                except core.LoginRequired:
+                    self.q.put(("need_login", None))
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    say(f"  检查失败：{e}", "err")
+                    continue
+                s = rep["summary"]
+                say(f"  已有 {s['same']} · 有更新 {s['updated']} · "
+                    f"缺失 {s['missing']} · 特殊 {s['special']}", "ok")
+                self._all_reports.append(rep)
+                self._special_pending.extend(
+                    [f for f in rep["files"] if f.get("special")])
+                self.q.put(("scan_files", (
+                    name, core.sanitize(name, c.get("courseid")), rep["files"])))
+        except Exception as e:  # noqa: BLE001
+            say(f"检查出错：{e}", "err")
+        self.q.put(("scan_done", None))
+
     def _run_scan(self, urls, oids, cookie, base, pdf_only=False,
                   lv=(True, False, False, False)):
         def say(msg, tag="dim"):
             self.q.put(("scan_log", (msg, tag)))
 
         try:
-            sig = "|".join(urls)
-            now = time.time()
-            force = (sig == self._last_scan_sig
-                     and now - self._last_scan_ts < 120)
-            use_cache = bool(self.scan_cache.get()) and not force
-            self._last_scan_sig, self._last_scan_ts = sig, now
-            if force:
-                say("已跳过扫描缓存，重新向服务器要最新列表…", "dim")
+            use_cache = bool(self.scan_cache.get())
             if urls and not cookie:
                 say("没读到登录态 —— 请先在 Firefox 登录学习通，"
                     "或把浏览器的 Cookie 粘到「Cookie」框里", "err")
@@ -2290,52 +2937,41 @@ class App(ctk.CTk):
                     say("不是可识别的课程页链接（URL 里需要 courseid 与 clazzid）", "err")
                     continue
                 try:
-                    name = (core.fetch_course_name(cookie, u, self.timeout)
-                            or f"课程{info['courseid']}")
+                    rep = core.check_local_course(
+                        cookie, u, base, self.timeout,
+                        progress=lambda m: say(m), use_cache=use_cache)
                 except core.LoginRequired:
-                    self.q.put(("need_login", None))
+                    # 手动 Cookie 经常是几天前粘的，早过期了；自动退到 Firefox 再试
+                    fb = self._live_cookie or core.firefox_cookie_header()
+                    if fb and fb != cookie:
+                        say("手动 Cookie 失效，改用 Firefox 登录态重试…", "dim")
+                        try:
+                            rep = core.check_local_course(
+                                fb, u, base, self.timeout,
+                                progress=lambda m: say(m), use_cache=use_cache)
+                        except core.LoginRequired:
+                            self.q.put(("need_login", None))
+                            continue
+                        except Exception as e:  # noqa: BLE001
+                            say(f"检查失败：{e}", "err")
+                            continue
+                    else:
+                        self.q.put(("need_login", None))
+                        continue
+                except Exception as e:  # noqa: BLE001
+                    say(f"检查失败：{e}", "err")
                     continue
-                except Exception:  # noqa: BLE001
-                    name = f"课程{info['courseid']}"
-                # 只传课程子目录名，绝对路径留给下载时按当前保存目录拼
-                subdir = core.sanitize(name, info["courseid"])
-                outdir = os.path.join(base, subdir)
 
-                # ① 章节页的任务点附件
-                try:
-                    sc = core.scan_course(cookie, u, self.timeout,
-                                          progress=lambda m: say(m),
-                                          use_cache=use_cache)
-                    say(f"章节任务点：{len(sc['files'])} 个")
-                    core.resolve_course_files(
-                        cookie, sc["files"], outdir, self.timeout,
-                        progress=lambda m: say(m), want_pdf_only=pdf_only,
-                        dir_of=lambda f: course_path(
-                            base, subdir, f.get("source") or "",
-                            f.get("unit") or "", f.get("chapter") or "", lv))
-                    self.q.put(("scan_files", (name, subdir, sc["files"])))
-                except core.LoginRequired:
-                    self.q.put(("need_login", None))
-                except Exception as e:  # noqa: BLE001
-                    say(f"章节扫描失败：{e}", "err")
-
-                # ② 「资料」页的文件
-                try:
-                    dfiles = core.scan_course_data(
-                        cookie, info["courseid"], info["clazzid"], info["cpi"],
-                        self.timeout, progress=lambda m: say(m))
-                    say(f"课程资料：{len(dfiles)} 个")
-                    core.resolve_course_files(
-                        cookie, dfiles, outdir, self.timeout,
-                        progress=lambda m: say(m), want_pdf_only=pdf_only,
-                        dir_of=lambda f: course_path(
-                            base, subdir, f.get("source") or "",
-                            f.get("unit") or "", f.get("chapter") or "", lv))
-                    self.q.put(("scan_files", (name, subdir, dfiles)))
-                except core.LoginRequired:
-                    self.q.put(("need_login", None))
-                except Exception as e:  # noqa: BLE001
-                    say(f"资料扫描失败：{e}", "err")
+                s = rep["summary"]
+                say(f"课程：{rep['name']}", "ok")
+                say(f"本地目录：{rep['local_dir'] or '（无）'}")
+                say(f"已有 {s['same']} · 有更新 {s['updated']} · "
+                    f"缺失 {s['missing']} · 特殊 {s['special']}", "ok")
+                self._special_pending.extend(
+                    [f for f in rep["files"] if f.get("special")])
+                self.q.put(("scan_files", (
+                    rep["name"], core.sanitize(rep["name"], rep["courseid"]),
+                    rep["files"])))
 
             for oid in oids:
                 try:
@@ -2357,11 +2993,18 @@ class App(ctk.CTk):
             exists = bool(f.get("exists"))
             same = f.get("same")
             url = f.get("url") or ""
+            special = bool(f.get("special"))
+            source = f.get("source") or "其他"
+            prefix = elide(course, 24) if course else ""
+            # 全部课程时同一门课会混在一起，分组头带上课程名
+            group = (f"{prefix} · 特殊/大文件（默认不下载）" if special
+                     else (f"{prefix} · {source}" if prefix else source))
             self.tasks.append({
                 "kind": "data" if url else "oid",
                 "payload": url or f.get("objectid") or "",
                 "oid": f.get("objectid") or "",
-                "group": f.get("source") or "其他",
+                # 特殊文件单独成组、默认不勾，避免把动辄几百 MB 的视频/安装包混进来
+                "group": group,
                 "subdir": subdir,
                 "unit": f.get("unit") or "",
                 "chapter": f.get("chapter") or "",
@@ -2371,33 +3014,91 @@ class App(ctk.CTk):
                 "size": f.get("hsize") or core.human(int(f.get("length") or 0)),
                 "bytes": int(f.get("length") or 0) or core.parse_hsize(f.get("hsize") or ""),
                 "course": course,
-                "path": f.get("path") or "",
+                "path": f.get("path") or f.get("local_path") or "",
                 "exists": exists,
                 "same": same,
-                "var": ctk.BooleanVar(value=True),
+                "special": special,
+                "special_reason": f.get("special_reason") or "",
+                "var": ctk.BooleanVar(value=not special),
             })
         self._render_tasks()
         self._save_queue()
 
     def _scan_finish(self):
         self.btn_scan.configure(state="normal")
+        self.btn_check.configure(state="normal")
         self.btn_start.configure(state="normal")
         self._refresh_firefox_cookies()
         self._update_auth_label()
         n = len(self.tasks)
         same = sum(1 for t in self.tasks if t["exists"] and t["same"])
-        diff = sum(1 for t in self.tasks if t["exists"] and not t["same"])
+        updated = sum(1 for t in self.tasks if t["exists"] and not t["same"])
+        missing = sum(1 for t in self.tasks if not t["exists"])
         self.lbl.configure(
             text=(f"共 {n} 个" if n else "就绪"),
             text_color=pair("primary") if n else pair("muted"),
         )
         if n:
-            self.log(f"扫描完成：{n} 个文件（本地已存在 {same + diff} 个：相同 {same}、"
-                     f"不同 {diff}）。勾选后点「开始下载」。", "head")
+            self.log(f"完成：{n} 个文件（已有 {same}、有更新 {updated}、缺失 {missing}）。"
+                     f"勾选后点「开始下载」。", "head")
         elif self._scan_login_failed:
             self.log("扫描中断：先把登录态弄好，再点「扫描」重试。", "err")
         else:
             self.log("扫描完成，但没找到任何附件。", "err")
+
+        special_names = [f.get("name") or "" for f in self._special_pending]
+        special_total = sum(int(f.get("length") or 0)
+                            or core.parse_hsize(f.get("hsize") or "")
+                            for f in self._special_pending)
+
+        if self._scanning_all and self._all_reports:
+            courses = len(self._all_reports)
+            lines = []
+            for rep in self._all_reports:
+                s = rep["summary"]
+                lines.append(f"{elide(rep['name'], 28)}：已有 {s['same']} / "
+                             f"有更新 {s['updated']} / 缺失 {s['missing']}")
+            preview = "\n".join(lines[:12]) + ("\n…" if len(lines) > 12 else "")
+            summary = (f"共 {courses} 门课，{n} 个文件\n"
+                       f"已有 {same} · 有更新 {updated} · 缺失 {missing} · "
+                       f"特殊/大文件 {len(special_names)}\n\n{preview}")
+            if special_names:
+                preview_sp = "\n".join(special_names[:8]) + (
+                    "\n…" if len(special_names) > 8 else "")
+                ok = messagebox.askyesno(
+                    "全部课程检查结果",
+                    summary + f"\n\n检测到 {len(special_names)} 个特殊/大文件"
+                    f"（约 {core.human(special_total)}）：\n{preview_sp}\n\n"
+                    "是否把这些特殊/大文件也勾选下载？")
+                if ok:
+                    for t in self.tasks:
+                        if t.get("special"):
+                            t["var"].set(True)
+                    self._update_sel()
+            else:
+                messagebox.showinfo("全部课程检查结果", summary)
+            self.log(summary, "head")
+        elif self._checking_local and self._special_pending:
+            preview = "\n".join(special_names[:8]) + (
+                "\n…" if len(special_names) > 8 else "")
+            if messagebox.askyesno(
+                    "特殊 / 大文件",
+                    f"检测到 {len(special_names)} 个视频 / 安装包 / 压缩包 / 大文件"
+                    f"（约 {core.human(special_total)}）：\n\n{preview}\n\n"
+                    "是否一起下载？\n（选「否」会保留在列表里，默认不勾选）"):
+                for t in self.tasks:
+                    if t.get("special"):
+                        t["var"].set(True)
+                self._update_sel()
+                self.log(f"特殊/大文件已勾选 {len(special_names)} 个", "ok")
+            else:
+                self.log("特殊/大文件保留在列表里、默认不勾；需要时手动勾选即可。",
+                         "dim")
+
+        self._checking_local = False
+        self._scanning_all = False
+        self._all_reports = []
+        self._special_pending = []
         self._scan_login_failed = False
 
     # ---------------- 下载 ----------------
@@ -2561,6 +3262,8 @@ class App(ctk.CTk):
                     self._update_auth_label()
                 elif kind == "accounts":
                     self._fill_accounts(payload)
+                elif kind == "course_list":
+                    self._on_course_list(payload)
                 elif kind == "live_cookie":
                     if payload and not self.cookie.get().strip():
                         self._live_cookie = payload
@@ -2635,7 +3338,9 @@ class App(ctk.CTk):
         self._save_queue()
         if self._failed_jobs:
             self.btn_retry.configure(text=f"重试失败 ({len(self._failed_jobs)})")
-            self.btn_retry.pack(side="left", padx=(10, 0), before=self.pb)
+            # before 必须是「当前仍被 pack 管理」的控件：进度条刚被 pack_forget 掉，
+            # 拿它当参照 Tk 会抛 TclError（window ... isn't packed），按钮就永远出不来。
+            self.btn_retry.pack(side="left", padx=(10, 0), before=self.lbl)
             self.log(f"有 {len(self._failed_jobs)} 个失败项，点「重试失败」再试一次", "err")
         else:
             self.btn_retry.pack_forget()
@@ -2643,6 +3348,7 @@ class App(ctk.CTk):
     # ---------------- 队列持久化 ----------------
     def _save_queue(self):
         """把当前任务列表落盘，关掉程序 / 崩溃后下次还能接着下。"""
+        self._save_queue_after = None
         if not self.tasks:
             return
         try:
@@ -2675,7 +3381,9 @@ class App(ctk.CTk):
             pass
 
     def _restore_queue(self):
-        if self.tasks or (self.worker and self.worker.is_alive()):
+        # 扫描/检查刚清空列表时也不能把旧队列塞回来，否则会和刚扫出的结果混在一起
+        if (self.tasks or (self.worker and self.worker.is_alive())
+                or (self.scan_worker and self.scan_worker.is_alive())):
             return
         try:
             with open(QUEUE_FILE, encoding="utf-8") as f:

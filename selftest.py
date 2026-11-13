@@ -35,6 +35,8 @@ REQUIRED_CORE_ATTRS = [
     "process_one", "fetch_status", "extract_objectids",
     "scan_course", "scan_course_data", "download_data_one",
     "parse_attachments", "fetch_account_name",
+    "check_local_course", "find_local_course_dir", "is_special_file",
+    "fetch_course_name_robust", "fetch_course_list", "course_time_status",
 ]
 
 # 章节页附件解析的回归样例：学习通现网三种写法混排（objectid 是占位值）。
