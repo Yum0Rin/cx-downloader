@@ -1,3 +1,9 @@
+## [1.4.3] - 2026-11-13
+
+### 变更
+
+- 更新检查在 GitHub API 不可用时回退到 Release 页 `/latest` 跳转；API/页面请求
+  超时放宽到 12 秒并重试 2 次，减少国内网络抖动导致的「检查失败」。
 # 更新日志
 
 本项目所有值得记的变更都写在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
@@ -293,3 +299,4 @@
 [1.1.1]: https://github.com/Yum0Rin/cx-downloader/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Yum0Rin/cx-downloader/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Yum0Rin/cx-downloader/releases/tag/v1.0.0
+

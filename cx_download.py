@@ -96,7 +96,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
-__version__ = "1.4.2"
+__version__ = "1.4.3"
 GITHUB_REPO = "Yum0Rin/cx-downloader"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"
@@ -1573,40 +1573,89 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in nums[:3]) or (0,)
 
 
-def check_update(current: str | None = None, timeout: int = 6) -> dict | None:
-    """查 GitHub 最新 Release：比当前版本新就返回信息，否则返回 None。
+def check_update(current: str | None = None, timeout: int = 12) -> dict | None:
+    """查 GitHub 最新 Release，比当前版本新就返回信息，否则返回 None。
 
-    网络不通 / 被墙 / API 限流都安静地返回 None —— 更新检查不能挡住正常使用。
+    API 被墙 / 502 / 限流时，回退到 Release 页的 /latest 跳转，尽量别让更新检查失效。
     """
+    data = None
+    for _ in range(2):
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                headers={"User-Agent": UA,
+                         "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.load(resp)
+            break
+        except Exception:  # noqa: BLE001
+            data = None
+            time.sleep(1)
+
+    if data:
+        tag = str(data.get("tag_name") or "").strip()
+        latest = tag[1:] if tag[:1] in ("v", "V") else tag
+        if not latest or parse_version(latest) <= parse_version(current or __version__):
+            return None
+        info = {
+            "version": latest,
+            "tag": tag,
+            "name": data.get("name") or tag,
+            "body": data.get("body") or "",
+            "url": data.get("html_url") or RELEASES_URL,
+            "published_at": data.get("published_at") or "",
+        }
+        # Windows 一键自更新要用 Release 里的 exe 资产（macOS/Linux 没有 .exe）
+        win = next((a for a in (data.get("assets") or [])
+                    if str(a.get("name") or "").lower().endswith(".exe")), None)
+        if win:
+            info["asset_url"] = win.get("browser_download_url") or ""
+            info["asset_size"] = int(win.get("size") or 0)
+            info["asset_name"] = win.get("name") or ""
+        return info
+
+    return _check_update_html(current, timeout)
+
+
+def _check_update_html(current: str | None = None,
+                       timeout: int = 12) -> dict | None:
+    """API 不可用时，用 github.com/<repo>/releases/latest 的 302 目标兜底。"""
+    for _ in range(2):
+        try:
+            req = urllib.request.Request(
+                f"https://github.com/{GITHUB_REPO}/releases/latest",
+                headers={"User-Agent": UA},
+            )
+            with urllib.request.urlopen(req, timeout=max(10, timeout)) as resp:
+                final = resp.geturl() or ""
+            break
+        except Exception:  # noqa: BLE001
+            final = ""
+            time.sleep(1)
+    if not final:
+        return None
     try:
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
-            headers={"User-Agent": UA, "Accept": "application/vnd.github+json"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.load(resp)
+        tag = final.rstrip("/").rsplit("/", 1)[-1]
+        latest = tag[1:] if tag[:1] in ("v", "V") else tag
+        if not latest or parse_version(latest) <= parse_version(current or __version__):
+            return None
+        asset = f"cx-downloader-{tag}-windows.exe"
+        return {
+            "version": latest,
+            "tag": tag,
+            "name": tag,
+            "body": ("（GitHub API 暂不可用，已从 Release 页获取到新版本；"
+                     "详细说明请点「浏览器下载」。）"),
+            "url": final,
+            "published_at": "",
+            "asset_url": (f"https://github.com/{GITHUB_REPO}/releases/download/"
+                          f"{tag}/{asset}"),
+            "asset_size": 0,
+            "asset_name": asset,
+        }
     except Exception:  # noqa: BLE001
         return None
-    tag = str(data.get("tag_name") or "").strip()
-    latest = tag[1:] if tag[:1] in ("v", "V") else tag
-    if not latest or parse_version(latest) <= parse_version(current or __version__):
-        return None
-    info = {
-        "version": latest,
-        "tag": tag,
-        "name": data.get("name") or tag,
-        "body": data.get("body") or "",
-        "url": data.get("html_url") or RELEASES_URL,
-        "published_at": data.get("published_at") or "",
-    }
-    # Windows 一键自更新要用 Release 里的 exe 资产（macOS/Linux 没有 .exe）
-    win = next((a for a in (data.get("assets") or [])
-                if str(a.get("name") or "").lower().endswith(".exe")), None)
-    if win:
-        info["asset_url"] = win.get("browser_download_url") or ""
-        info["asset_size"] = int(win.get("size") or 0)
-        info["asset_name"] = win.get("name") or ""
-    return info
 
 
 # ------------------------------------------------------------ 课程「资料」页
@@ -1947,6 +1996,11 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         sys.exit(130)
+
+
+
+
+
 
 
 
