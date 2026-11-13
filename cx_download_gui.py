@@ -1502,7 +1502,8 @@ class App(ctk.CTk):
                     lbl_status.configure(text=f"发现 v{info['version']}",
                                          text_color=pair("primary"))
                     btn_check.configure(text="查看更新",
-                                        command=lambda: self._on_update(info))
+                                        command=lambda: self._on_update(
+                                            info, force_show=True))
                 else:
                     lbl_status.configure(text="已是最新", text_color=pair("ok"))
 
@@ -1565,7 +1566,7 @@ class App(ctk.CTk):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_update(self, info):
+    def _on_update(self, info, force_show: bool = False):
         if not info:
             return
         self._update_info = info
@@ -1574,7 +1575,8 @@ class App(ctk.CTk):
         self.log(f"发现新版本 v{info['version']}（当前 v{core.__version__}），"
                  f"点右上角「更新」查看改了什么", "head")
         seen = load_settings().get("seen_update") or ""
-        if seen != info["version"]:
+        # 启动时被忽略过的版本不再自动弹；设置里手动「查看更新」要强制弹
+        if force_show or seen != info["version"]:
             self.after(400, self._show_update)
 
     @staticmethod
@@ -1625,8 +1627,8 @@ class App(ctk.CTk):
         box.configure(state="disabled")
 
         row = ctk.CTkFrame(wrap, fg_color="transparent")
-        row.pack(fill="x", padx=16, pady=(12, 14))
-        self._btn(row, "打开下载页", lambda: webbrowser.open(info["url"]),
+        row.pack(fill="x", padx=16, pady=(12, 4))
+        self._btn(row, "下载新版本", lambda: webbrowser.open(info["url"]),
                   width=110).pack(side="left")
         self._btn(row, "关闭", dlg.destroy, width=64).pack(side="right")
 
@@ -1634,10 +1636,17 @@ class App(ctk.CTk):
             d = load_settings()
             d["seen_update"] = info["version"]
             save_settings(d)
-            self.log(f"已忽略 v{info['version']} 的更新提醒（右上角按钮还在）", "dim")
+            self.log(f"已忽略 v{info['version']} 的更新提醒（可在设置里再检查）",
+                     "dim")
             dlg.destroy()
 
-        self._btn(row, "忽略此版本", ignore, width=94).pack(side="right", padx=(0, 8))
+        self._btn(row, "不再提示此版本", ignore, width=120).pack(
+            side="right", padx=(0, 8))
+        ctk.CTkLabel(
+            wrap,
+            text="忽略后仍可在「设置 → 关于 → 检查更新」里手动查看和更新。",
+            anchor="w", font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
+        ).pack(fill="x", padx=16, pady=(0, 14))
 
         dlg.update_idletasks()
         scale = ctk.ScalingTracker.get_window_scaling(dlg) or 1.0
