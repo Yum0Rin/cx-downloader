@@ -96,7 +96,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 GITHUB_REPO = "Yum0Rin/cx-downloader"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"
@@ -1591,7 +1591,7 @@ def check_update(current: str | None = None, timeout: int = 6) -> dict | None:
     latest = tag[1:] if tag[:1] in ("v", "V") else tag
     if not latest or parse_version(latest) <= parse_version(current or __version__):
         return None
-    return {
+    info = {
         "version": latest,
         "tag": tag,
         "name": data.get("name") or tag,
@@ -1599,6 +1599,14 @@ def check_update(current: str | None = None, timeout: int = 6) -> dict | None:
         "url": data.get("html_url") or RELEASES_URL,
         "published_at": data.get("published_at") or "",
     }
+    # Windows 一键自更新要用 Release 里的 exe 资产（macOS/Linux 没有 .exe）
+    win = next((a for a in (data.get("assets") or [])
+                if str(a.get("name") or "").lower().endswith(".exe")), None)
+    if win:
+        info["asset_url"] = win.get("browser_download_url") or ""
+        info["asset_size"] = int(win.get("size") or 0)
+        info["asset_name"] = win.get("name") or ""
+    return info
 
 
 # ------------------------------------------------------------ 课程「资料」页
@@ -1939,4 +1947,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         sys.exit(130)
+
+
+
 

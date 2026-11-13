@@ -24,6 +24,8 @@ import ctypes
 import json
 import os
 import queue
+import tempfile
+import urllib.request
 import re
 import subprocess
 import sys
@@ -1074,6 +1076,8 @@ class App(ctk.CTk):
         self.auto_skip = ctk.BooleanVar(value=bool(cfg.get("auto_skip", True)))
         self.scan_cache = ctk.BooleanVar(value=bool(cfg.get("scan_cache", True)))
         self.cookie = ctk.StringVar(value=cfg.get("cookie") or "")
+        # 可选：GitHub Release 资产下载代理，例如 http://127.0.0.1:7897
+        self.upd_proxy = ctk.StringVar(value=cfg.get("update_proxy") or "")
         self.appearance = ctk.StringVar(value=cfg.get("appearance") or "跟随系统")
         # 目录层级：勾中的才会真的建目录。默认只建「课程名」一级，跟老行为一致。
         lv = cfg.get("levels") or {}
@@ -1465,6 +1469,22 @@ class App(ctk.CTk):
             self._btn(row_links, "请作者喝杯奶茶", self._show_support,
                       width=124).pack(side="left", padx=(8, 0))
 
+        # 一键更新走 GitHub 资产 CDN，国内可能需要走代理
+        row_proxy = ctk.CTkFrame(wrap, fg_color="transparent")
+        row_proxy.pack(fill="x", padx=16, pady=(8, 0))
+        ctk.CTkLabel(
+            row_proxy, text="更新下载代理", anchor="w",
+            font=ctk.CTkFont(FONT, 12), text_color=pair("muted"),
+        ).pack(side="left")
+        ctk.CTkEntry(
+            row_proxy, textvariable=self.upd_proxy, height=30,
+            corner_radius=8, border_width=1, border_color=pair("input_border"),
+            fg_color=pair("input"), text_color=pair("text"),
+            placeholder_text="可选，如 http://127.0.0.1:7897",
+            placeholder_text_color=pair("muted"),
+            font=ctk.CTkFont(FONT, 11),
+        ).pack(side="left", fill="x", expand=True, padx=(8, 0))
+
         # 交流 / 反馈：一行字 + 一键复制群号
         row_qq = ctk.CTkFrame(wrap, fg_color="transparent")
         row_qq.pack(fill="x", padx=16, pady=(10, 0))
@@ -1522,6 +1542,7 @@ class App(ctk.CTk):
             d["accent"] = self._accent_pick
             d["appearance"] = self.appearance.get()
             d["scan_cache"] = bool(self.scan_cache.get())
+            d["update_proxy"] = self.upd_proxy.get().strip()
             save_settings(d)
             self.accent = self._accent_pick
             if restart:
@@ -1626,10 +1647,26 @@ class App(ctk.CTk):
         box.insert("1.0", self._plain_md(info.get("body") or "（这个版本没写更新说明）"))
         box.configure(state="disabled")
 
+        can_auto = (sys.platform.startswith("win")
+                    and getattr(sys, "frozen", False)
+                    and bool(info.get("asset_url")))
+        self._upd_dlg = dlg
+        self._upd_info = info
+
         row = ctk.CTkFrame(wrap, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=(12, 4))
-        self._btn(row, "下载新版本", lambda: webbrowser.open(info["url"]),
-                  width=110).pack(side="left")
+        if can_auto:
+            self._upd_btn = self._btn(
+                row, "一键更新", lambda: self._auto_update(info, dlg), width=110)
+        else:
+            self._upd_btn = self._btn(
+                row, "下载新版本", lambda: webbrowser.open(info["url"]),
+                width=110)
+        self._upd_btn.pack(side="left")
+        if can_auto:
+            self._btn(row, "浏览器下载",
+                      lambda: webbrowser.open(info["url"]),
+                      width=96).pack(side="left", padx=(8, 0))
         self._btn(row, "关闭", dlg.destroy, width=64).pack(side="right")
 
         def ignore():
@@ -1642,10 +1679,27 @@ class App(ctk.CTk):
 
         self._btn(row, "不再提示此版本", ignore, width=120).pack(
             side="right", padx=(0, 8))
+
+        prog = ctk.CTkFrame(wrap, fg_color="transparent")
+        prog.pack(fill="x", padx=16, pady=(0, 2))
+        self._upd_lbl = ctk.CTkLabel(
+            prog, text="", anchor="w", font=ctk.CTkFont(FONT, 11),
+            text_color=pair("muted"),
+        )
+        self._upd_lbl.pack(fill="x")
+        self._upd_pb = ctk.CTkProgressBar(
+            prog, height=8, corner_radius=4,
+            fg_color=pair("track"), progress_color=pair("primary"),
+        )
+        self._upd_pb.set(0)
+        self._upd_pb.pack(fill="x", pady=(2, 0))
+
+        hint = ("一键更新会下载 v{} 的 Windows exe，退出后自动覆盖并重启。"
+                .format(info["version"]) if can_auto else
+                "忽略后仍可在「设置 → 关于 → 检查更新」里手动查看和更新。")
         ctk.CTkLabel(
-            wrap,
-            text="忽略后仍可在「设置 → 关于 → 检查更新」里手动查看和更新。",
-            anchor="w", font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
+            wrap, text=hint, anchor="w",
+            font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
         ).pack(fill="x", padx=16, pady=(0, 14))
 
         dlg.update_idletasks()
@@ -1655,6 +1709,131 @@ class App(ctk.CTk):
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 3
         dlg.geometry(f"{w}x{h}+{max(20, x)}+{max(20, y)}")
+
+    def _auto_update(self, info: dict, dlg):
+        """下载 Release 里的 Windows exe，退出后由批处理覆盖自身并重启。"""
+        if not (sys.platform.startswith("win") and getattr(sys, "frozen", False)):
+            webbrowser.open(info.get("url") or core.RELEASES_URL)
+            return
+        asset = info.get("asset_url") or ""
+        if not asset:
+            webbrowser.open(info.get("url") or core.RELEASES_URL)
+            return
+        try:
+            self._upd_btn.configure(state="disabled", text="下载中…")
+            self._upd_lbl.configure(text="准备下载…", text_color=pair("muted"))
+            self._upd_pb.set(0)
+        except Exception:  # noqa: BLE001
+            pass
+
+        def work():
+            try:
+                tmp = os.path.join(
+                    tempfile.gettempdir(),
+                    f"cx-downloader-{info['version']}-new.exe")
+                total = int(info.get("asset_size") or 0)
+                req = urllib.request.Request(
+                    asset, headers={"User-Agent": core.UA})
+                proxy = (load_settings().get("update_proxy") or "").strip()
+                if proxy and "://" not in proxy:
+                    proxy = "http://" + proxy
+                if proxy:
+                    opener = urllib.request.build_opener(
+                        urllib.request.ProxyHandler(
+                            {"http": proxy, "https": proxy}))
+                else:
+                    opener = urllib.request.build_opener()
+                started = time.time()
+                with opener.open(req, timeout=120) as r, \
+                        open(tmp, "wb") as f:
+                    got = 0
+                    while True:
+                        chunk = r.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+                        self.q.put(("update_progress", (got, total)))
+                        if time.time() - started > 300:
+                            raise RuntimeError(
+                                "GitHub 下载超过 5 分钟，已中止；"
+                                "请用「浏览器下载」或设置代理")
+                size = os.path.getsize(tmp)
+                if total and size != total:
+                    raise RuntimeError(f"下载大小不符：{size}/{total}")
+                with open(tmp, "rb") as f:
+                    if f.read(2) != b"MZ":
+                        raise RuntimeError("下载的文件不是有效的 Windows exe")
+                self.q.put(("update_ready", (tmp, info)))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("update_failed", str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_update(self, new_exe: str, info: dict):
+        dlg = getattr(self, "_upd_dlg", None)
+        try:
+            if dlg and dlg.winfo_exists():
+                self._upd_pb.set(1.0)
+                self._upd_lbl.configure(
+                    text="下载完成，正在退出并替换…", text_color=pair("ok"))
+        except Exception:  # noqa: BLE001
+            pass
+
+        old = sys.executable
+        bat = os.path.join(
+            tempfile.gettempdir(), f"cx-self-update-{int(time.time())}.bat")
+        script = (
+            "@echo off\r\n"
+            "setlocal\r\n"
+            f'set "PID={os.getpid()}"\r\n'
+            ":wait\r\n"
+            'tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL\r\n'
+            "if not errorlevel 1 (\r\n"
+            "  timeout /t 1 /nobreak >NUL\r\n"
+            "  goto wait\r\n"
+            ")\r\n"
+            f'attrib -R "{old}" >NUL 2>NUL\r\n'
+            "set /a tries=0\r\n"
+            ":copy\r\n"
+            f'copy /Y "{new_exe}" "{old}" >NUL\r\n'
+            "if not errorlevel 1 goto copied\r\n"
+            "set /a tries+=1\r\n"
+            "if %tries% geq 10 goto copied\r\n"
+            "timeout /t 2 /nobreak >NUL\r\n"
+            "goto copy\r\n"
+            ":copied\r\n"
+            f'start "" "{old}"\r\n'
+            '(goto) 2>nul & del "%~f0"\r\n'
+        )
+        with open(bat, "w", encoding="gbk", errors="replace") as f:
+            f.write(script)
+        subprocess.Popen(
+            ["cmd", "/c", bat],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            close_fds=True,
+        )
+        try:
+            if dlg:
+                dlg.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+        self.destroy()
+        os._exit(0)
+
+    def _update_failed(self, msg: str):
+        dlg = getattr(self, "_upd_dlg", None)
+        if dlg and dlg.winfo_exists():
+            try:
+                self._upd_btn.configure(state="normal", text="一键更新")
+                self._upd_lbl.configure(
+                    text=f"更新失败：{msg}",
+                    text_color=("#C03A2B", "#EE7B6E"))
+            except Exception:  # noqa: BLE001
+                pass
+        messagebox.showwarning(
+            "更新失败",
+            f"{msg}\n\n可以点「下载新版本」手动更新。")
 
     def _build_input(self, parent):
         card = Card(parent, "① 链接输入（预览页 / objectid / 课程页）")
@@ -3273,6 +3452,26 @@ class App(ctk.CTk):
                     self._fill_accounts(payload)
                 elif kind == "course_list":
                     self._on_course_list(payload)
+                elif kind == "update_progress":
+                    got, total = payload
+                    dlg = getattr(self, "_upd_dlg", None)
+                    if dlg and dlg.winfo_exists():
+                        try:
+                            if total:
+                                self._upd_pb.set(min(1.0, got / total))
+                                self._upd_lbl.configure(
+                                    text=f"下载中… {got * 100 // total}%  "
+                                         f"({core.human(got)} / "
+                                         f"{core.human(total)})")
+                            else:
+                                self._upd_lbl.configure(
+                                    text=f"下载中… {core.human(got)}")
+                        except Exception:  # noqa: BLE001
+                            pass
+                elif kind == "update_ready":
+                    self._apply_update(*payload)
+                elif kind == "update_failed":
+                    self._update_failed(payload)
                 elif kind == "live_cookie":
                     if payload and not self.cookie.get().strip():
                         self._live_cookie = payload
