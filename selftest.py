@@ -37,6 +37,7 @@ REQUIRED_CORE_ATTRS = [
     "parse_attachments", "fetch_account_name",
     "check_local_course", "find_local_course_dir", "is_special_file",
     "fetch_course_name_robust", "fetch_course_list", "course_time_status",
+    "system_proxy",
 ]
 
 # 章节页附件解析的回归样例：学习通现网三种写法混排（objectid 是占位值）。
