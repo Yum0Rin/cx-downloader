@@ -45,6 +45,9 @@ import cx_download as core  # noqa: E402
 
 SETTINGS = os.path.join(os.path.expanduser("~"), ".cx_download_gui.json")
 QUEUE_FILE = os.path.join(os.path.expanduser("~"), ".cx_download_queue.json")
+# 一键更新的结果由替换用的批处理写在这里（只有 ok/fail + 版本号，纯 ASCII）。
+# 不写这里就没法告诉用户「其实没换成」——装在没有写权限的目录时会静默失败。
+UPDATE_STATUS = os.path.join(tempfile.gettempdir(), "cx-self-update-status.txt")
 QQ_GROUP = "1129676506"
 
 
@@ -52,6 +55,57 @@ def asset_path(name: str) -> str:
     """打包后资源在 _MEIPASS 解包目录，源码运行时在仓库根的 assets/。"""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, "assets", name)
+
+
+def self_update_script(new_exe: str, old: str, pid: int, ver: str) -> str:
+    """生成「等进程退出 → 覆盖 → 重启」的批处理。
+
+    单独成函数是为了能被探针直接调用（不依赖 GUI 实例）。脚本里只有 ASCII，
+    路径另外按 GBK 写盘 —— 所以调用方要先 `script.encode("gbk")` 试一下。
+    复制失败不再静默：连续 10 次失败或大小对不上，都写 `fail` 进状态文件，
+    让下次启动能告诉用户；成功则写 `ok` + 版本号。
+    """
+    return (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        f'set "PID={pid}"\r\n'
+        f'set "NEW={new_exe}"\r\n'
+        f'set "OLD={old}"\r\n'
+        f'set "STATUS={UPDATE_STATUS}"\r\n'
+        f'set "VER={ver}"\r\n'
+        ":wait\r\n"
+        'tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL\r\n'
+        "if not errorlevel 1 (\r\n"
+        "  timeout /t 1 /nobreak >NUL\r\n"
+        "  goto wait\r\n"
+        ")\r\n"
+        f'attrib -R "%OLD%" >NUL 2>NUL\r\n'
+        "set /a tries=0\r\n"
+        ":copy\r\n"
+        'copy /Y "%NEW%" "%OLD%" >NUL 2>NUL\r\n'
+        "if not errorlevel 1 goto verify\r\n"
+        "set /a tries+=1\r\n"
+        "if %tries% geq 10 goto failed\r\n"
+        "timeout /t 2 /nobreak >NUL\r\n"
+        "goto copy\r\n"
+        ":verify\r\n"
+        'for %%A in ("%NEW%") do set "NS=%%~zA"\r\n'
+        'for %%A in ("%OLD%") do set "OS=%%~zA"\r\n'
+        'if "%NS%"=="%OS%" goto ok\r\n'
+        "goto failed\r\n"
+        ":ok\r\n"
+        '> "%STATUS%" echo ok\r\n'
+        '>> "%STATUS%" echo %VER%\r\n'
+        'start "" "%OLD%"\r\n'
+        "goto quit\r\n"
+        ":failed\r\n"
+        '> "%STATUS%" echo fail\r\n'
+        '>> "%STATUS%" echo %VER%\r\n'
+        'start "" "%OLD%"\r\n'
+        "goto quit\r\n"
+        ":quit\r\n"
+        '(goto) 2>nul & del "%~f0"\r\n'
+    )
 DEFAULT_OUT = os.path.join(os.path.expanduser("~"), "Downloads", "超星下载")
 
 # ---------------------------------------------------------------- 配色
@@ -1123,6 +1177,7 @@ class App(ctk.CTk):
         self.after(300, self._probe_live_cookie)
         self.after(600, self._fetch_account_name_async)
         self.after(800, self._restore_queue)
+        self.after(700, self._check_update_result)
         self.after(1500, self._check_update_async)
         self.after(100, self._drain)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1771,6 +1826,13 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
 
     def _apply_update(self, new_exe: str, info: dict):
+        """下载完的 exe 交给批处理：等本进程退出 → 覆盖 → 重启。
+
+        成败都写进 UPDATE_STATUS（纯 ASCII），下次启动由 _check_update_result 读出来。
+        之前这里连续复制失败 10 次也照样 `goto copied` 启动旧 exe，用户只看到
+        「程序重启了」，版本没变且毫无提示 —— 装在没有写权限的目录（Program Files）
+        或被杀软锁文件时必现。
+        """
         dlg = getattr(self, "_upd_dlg", None)
         try:
             if dlg and dlg.winfo_exists():
@@ -1781,33 +1843,35 @@ class App(ctk.CTk):
             pass
 
         old = sys.executable
+        ver = str(info.get("version") or "")
         bat = os.path.join(
             tempfile.gettempdir(), f"cx-self-update-{int(time.time())}.bat")
-        script = (
-            "@echo off\r\n"
-            "setlocal\r\n"
-            f'set "PID={os.getpid()}"\r\n'
-            ":wait\r\n"
-            'tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL\r\n'
-            "if not errorlevel 1 (\r\n"
-            "  timeout /t 1 /nobreak >NUL\r\n"
-            "  goto wait\r\n"
-            ")\r\n"
-            f'attrib -R "{old}" >NUL 2>NUL\r\n'
-            "set /a tries=0\r\n"
-            ":copy\r\n"
-            f'copy /Y "{new_exe}" "{old}" >NUL\r\n'
-            "if not errorlevel 1 goto copied\r\n"
-            "set /a tries+=1\r\n"
-            "if %tries% geq 10 goto copied\r\n"
-            "timeout /t 2 /nobreak >NUL\r\n"
-            "goto copy\r\n"
-            ":copied\r\n"
-            f'start "" "{old}"\r\n'
-            '(goto) 2>nul & del "%~f0"\r\n'
-        )
-        with open(bat, "w", encoding="gbk", errors="replace") as f:
-            f.write(script)
+        script = self_update_script(new_exe, old, os.getpid(), ver)
+        try:
+            data = script.encode("gbk")
+        except UnicodeEncodeError:
+            # 路径里有 GBK 编不出的字符，批处理会指向错误路径 —— 宁可不自动替换
+            messagebox.showinfo(
+                "需要手动更新",
+                f"程序所在路径含 GBK 无法表示的字符，自动替换可能出错，已取消。\n\n"
+                f"新版本已下载到：\n{new_exe}\n\n"
+                f"请关闭本程序后，手动把它复制到：\n{old}",
+                parent=self)
+            webbrowser.open(info.get("url") or core.RELEASES_URL)
+            return
+        try:
+            os.remove(UPDATE_STATUS)   # 清掉上一次的旧结果，免得读串
+        except OSError:
+            pass
+        try:
+            with open(bat, "wb") as f:
+                f.write(data)
+        except OSError as e:
+            messagebox.showwarning(
+                "无法自动更新",
+                f"写替换脚本失败：{e}\n\n请用「浏览器下载」手动更新。",
+                parent=self)
+            return
         subprocess.Popen(
             ["cmd", "/c", bat],
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -1820,6 +1884,53 @@ class App(ctk.CTk):
             pass
         self.destroy()
         os._exit(0)
+
+    def _check_update_result(self):
+        """读上一次「一键更新」的替换结果（由批处理写入 UPDATE_STATUS）。
+
+        成功：日志记一行，删掉 %TEMP% 里的残包。
+        失败：弹窗说清楚 —— 新版本在哪、为什么可能失败、怎么手动完成。
+        """
+        try:
+            if not os.path.exists(UPDATE_STATUS):
+                return
+            with open(UPDATE_STATUS, "r", encoding="utf-8", errors="replace") as f:
+                lines = [ln.strip() for ln in f.read().splitlines() if ln.strip()]
+            os.remove(UPDATE_STATUS)
+        except OSError:
+            return
+
+        state = lines[0].lower() if lines else ""
+        ver = lines[1] if len(lines) > 1 else ""
+        new_exe = (os.path.join(tempfile.gettempdir(),
+                                f"cx-downloader-{ver}-new.exe") if ver else "")
+        # 批处理说成功，还要当前真的跑着新版本才算数
+        replaced = bool(ver) and (core.parse_version(ver)
+                                  <= core.parse_version(core.__version__))
+        if state == "ok" and replaced:
+            self.log(f"已更新到 v{ver}（自动替换完成）。", "head")
+            if new_exe and os.path.exists(new_exe):
+                try:
+                    os.remove(new_exe)
+                except OSError:
+                    pass
+            return
+
+        old = sys.executable
+        where = f"\n\n新版本已下载到：\n{new_exe}" if (new_exe and
+                                                     os.path.exists(new_exe)) else ""
+        self.log(f"自动更新没完成：v{ver or '?'} 未能替换当前程序。", "err")
+        messagebox.showwarning(
+            "自动更新没完成",
+            f"新版本 v{ver or '?'} 没能替换掉当前程序，现在运行的还是 "
+            f"v{core.__version__}。{where}\n\n"
+            "常见原因：\n"
+            "· 程序所在目录没有写权限（例如装在 Program Files）\n"
+            "· 文件被杀毒软件 / 安全软件占用\n\n"
+            "处理办法：关闭本程序，把上面那个 exe 复制到\n"
+            f"{old}\n"
+            "（覆盖原文件）再重新打开即可。也可以点「浏览器下载」重新下载。",
+            parent=self)
 
     def _update_failed(self, msg: str):
         dlg = getattr(self, "_upd_dlg", None)
