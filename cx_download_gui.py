@@ -1616,6 +1616,12 @@ class App(ctk.CTk):
             placeholder_text_color=pair("muted"),
             font=ctk.CTkFont(FONT, 11),
         ).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        ctk.CTkLabel(
+            wrap, text="国内下载 GitHub 慢或下不动时填本地代理（如 Clash 的 "
+                       "127.0.0.1:7897）；留空会自动使用系统代理。",
+            anchor="w", justify="left", wraplength=520,
+            font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
+        ).pack(fill="x", padx=16, pady=(2, 0))
 
         # 交流 / 反馈：一行字 + 一键复制群号
         row_qq = ctk.CTkFrame(wrap, fg_color="transparent")
@@ -1799,7 +1805,7 @@ class App(ctk.CTk):
             self._btn(row, "浏览器下载",
                       lambda: webbrowser.open(info["url"]),
                       width=96).pack(side="left", padx=(8, 0))
-        self._btn(row, "关闭", dlg.destroy, width=64).pack(side="right")
+        self._btn(row, "稍后再说", dlg.destroy, width=88).pack(side="right")
 
         def ignore():
             d = load_settings()
@@ -1826,11 +1832,21 @@ class App(ctk.CTk):
         self._upd_pb.set(0)
         self._upd_pb.pack(fill="x", pady=(2, 0))
 
-        hint = ("一键更新会下载 v{} 的 Windows exe，退出后自动覆盖并重启。"
-                .format(info["version"]) if can_auto else
+        if can_auto:
+            hint = (
+                f"一键更新：下载 v{info['version']} 的 Windows exe，退出后自动覆盖并重启。\n"
+                "设置、登录态、下载队列都会保留，不用重新配置。\n"
+                "装在 Program Files 等目录需要管理员权限，否则会提示替换失败；"
+                "失败时新版本会留在临时目录，按提示手动复制即可。\n"
+                "「稍后再说」下次启动仍会提醒；「不再提示此版本」只忽略这一个版本。")
+        else:
+            hint = (
+                "浏览器下载后，用新的程序文件替换当前这份即可（设置会保留）。\n"
+                "「稍后再说」下次启动仍会提醒；「不再提示此版本」只忽略这一个版本。\n"
                 "忽略后仍可在「设置 → 关于 → 检查更新」里手动查看和更新。")
+        # wraplength 按逻辑像素给就行：CTkLabel 内部会自己乘缩放
         ctk.CTkLabel(
-            wrap, text=hint, anchor="w",
+            wrap, text=hint, anchor="w", justify="left", wraplength=520,
             font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
         ).pack(fill="x", padx=16, pady=(0, 14))
 
