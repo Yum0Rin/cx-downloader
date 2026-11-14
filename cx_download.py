@@ -98,7 +98,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
-__version__ = "1.4.5"
+__version__ = "1.4.6"
 GITHUB_REPO = "Yum0Rin/cx-downloader"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"
@@ -1717,13 +1717,19 @@ def _fetch_release(kind: str, url: str, current: str,
         return _release_info(json.load(resp), current, label)
 
 
+# 配了境内清单时，先给它这么长的独占窗口再接受 GitHub 的结果。
+# 校园网常见「api.github.com 能通，但资产 CDN 挂」：纯竞速会选到只有
+# GitHub 单地址的 API 结果，境内镜像里的下载地址就用不上了。
+MIRROR_PRIORITY_SEC = 1.5
+
+
 def check_update(current: str | None = None, timeout: int = 8,
                  mirrors: list[str] | None = None) -> dict | None:
-    """多源并行竞速查更新，谁先给出有效结果用谁。
+    """多源并行查更新，配了境内清单时它在优先窗口内先赢。
 
     源 = 用户配置的境内清单 URL（可多个）+ GitHub API + Release 页 302。
-    境内清单放在最前面：校园网这类「境外不通、又不能开代理」的环境里，
-    它会先返回，挂掉的 GitHub 不会再让用户干等二十多秒。
+    境内清单在 `MIRROR_PRIORITY_SEC` 内先到就用它；窗口内没回（清单挂了）
+    才放行为谁快谁赢，保证 GitHub 通的时候照样能更新。
     慢源都是 daemon 线程，拿到结果后主线程直接返回，不拖程序退出。
     """
     cur = current or __version__
@@ -1745,17 +1751,27 @@ def check_update(current: str | None = None, timeout: int = 8,
     for kind, url in tasks:
         threading.Thread(target=worker, args=(kind, url), daemon=True).start()
 
+    mirror_count = sum(1 for kind, _ in tasks if kind == "manifest")
+    priority_until = time.time() + (MIRROR_PRIORITY_SEC if mirror_count else 0)
     deadline = time.time() + timeout + 2
     seen = 0
+    fallback: dict | None = None
     while seen < len(tasks) and time.time() < deadline:
         try:
-            status, info = results.get(timeout=0.25)
+            status, info = results.get(timeout=0.2)
         except queue.Empty:
+            # 窗口内 GitHub 先回了也先压着；窗口过了就用它
+            if fallback is not None and time.time() >= priority_until:
+                return fallback
             continue
         seen += 1
-        if status == "ok":
+        if status != "ok":
+            continue
+        if not mirror_count or (info or {}).get("source") == "境内更新清单":
             return info
-    return None
+        if fallback is None:
+            fallback = info
+    return fallback
 
 
 def check_exe_package(path: str, expect_sha256: str = "") -> tuple[bool, str]:

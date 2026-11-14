@@ -39,6 +39,7 @@ REQUIRED_CORE_ATTRS = [
     "check_local_course", "find_local_course_dir", "is_special_file",
     "fetch_course_name_robust", "fetch_course_list", "course_time_status",
     "system_proxy", "parse_mirror_urls", "check_exe_package", "check_update",
+    "MIRROR_PRIORITY_SEC",
 ]
 
 # 合成样例（不是真实 Release）：验证「境外不通时走境内清单」的解析链路
@@ -237,6 +238,59 @@ def _check_update_logic(rep: Report):
         rep.bad(f"离线包校验抛异常: {e!r}")
 
 
+def _check_mirror_priority(rep: Report):
+    """④ 境内源优先窗口（脱网，假源模拟延迟）：GitHub 更快也要先用境内清单。"""
+    import cx_download as core  # noqa: PLC0415
+
+    orig = core._fetch_release
+    gh = {
+        "version": "9.9.8", "tag": "v9.9.8",
+        "assets": [{"name": "cx.exe", "url": "https://github.example/cx.exe",
+                    "size": 1000000, "sha256": "11" * 32}],
+    }
+    mf = {
+        "version": "9.9.9", "tag": "v9.9.9",
+        "assets": [{"name": "cx.exe", "url": "https://gitee.example/cx.exe",
+                    "size": 1000000, "sha256": "00" * 32},
+                   {"name": "cx.exe", "url": "https://github.example/cx.exe",
+                    "size": 1000000, "sha256": "00" * 32}],
+    }
+
+    def github_first(kind, url, current, timeout):
+        if kind == "manifest":
+            time.sleep(0.15)          # 境内稍慢，模拟真实网络
+            return core._release_info(mf, current, "境内更新清单")
+        return core._release_info(gh, current, "GitHub API")
+
+    def mirror_down(kind, url, current, timeout):
+        if kind == "manifest":
+            raise RuntimeError("合成：境内源挂掉")
+        return core._release_info(gh, current, "GitHub API")
+
+    try:
+        core._fetch_release = github_first
+        info = core.check_update(mirrors=["https://mirror.example/latest.json"],
+                                 current="1.4.4", timeout=2)
+        if (info and info["source"] == "境内更新清单"
+                and len(info["asset_urls"]) == 2):
+            rep.ok("境内源优先：GitHub 先回也仍使用境内清单的两个下载地址")
+        else:
+            rep.bad(f"境内源没被优先：{info and info.get('source')} "
+                    f"地址数={info and len(info.get('asset_urls') or [])}")
+
+        core._fetch_release = mirror_down
+        info2 = core.check_update(mirrors=["https://mirror.example/latest.json"],
+                                  current="1.4.4", timeout=2)
+        if info2 and info2["source"] == "GitHub API":
+            rep.ok("境内源挂掉时仍回退到 GitHub，不卡死")
+        else:
+            rep.bad(f"境内源挂掉后没回退：{info2 and info2.get('source')}")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"优先窗口自检抛异常: {e!r}")
+    finally:
+        core._fetch_release = orig
+
+
 def _check_network(rep: Report, objectids: list[str], timeout: int = 60):
     """② 联网 + 写盘：HTTPS 走系统证书库，冻结后不一定还灵，必须实测。"""
     import cx_download as core  # noqa: PLC0415
@@ -285,6 +339,7 @@ def run(objectids: list[str] | None = None, network: bool = True,
     _check_bundle(rep)
     _check_parser(rep)
     _check_update_logic(rep)
+    _check_mirror_priority(rep)
     if network:
         _check_network(rep, oids)
     else:
