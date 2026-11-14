@@ -1,22 +1,22 @@
 {
-  "version": "1.4.6",
-  "tag": "v1.4.6",
-  "name": "v1.4.6",
-  "body": "### 修复\n\n- **境内更新源优先级**：配了境内清单时，给它 1.5 秒独占窗口再接受 GitHub 结果。\n  之前是纯「谁快谁赢」：校园网里 `api.github.com` 能通但资产 CDN 挂掉时，\n  竞速会选到只有 GitHub 单地址的 API 结果，境内清单里的镜像下载地址完全用不上，\n  一键更新必然卡在下载。现在优先用境内清单（可带多个下载地址），\n  境内源挂了才放行 GitHub，不会因此变慢或失效。\n\n- 自检增加两条用例：GitHub 更快时仍选境内清单、境内源挂掉时回退到 GitHub。",
-  "url": "https://github.com/Yum0Rin/cx-downloader/releases/tag/v1.4.6",
-  "published_at": "2026-11-14T07:13:27Z",
+  "version": "1.4.7",
+  "tag": "v1.4.7",
+  "name": "v1.4.7",
+  "body": "### 变更\n\n- **移除更新链路里用不到的网络设置**：设置页的那格手动输入框、自动读取 Windows\n  网络设置的逻辑，以及一键更新下载时的相关分支全部删除；更新下载一律直连。\n- 界面、README、CHANGELOG 里相关措辞一并清理，工具内不再出现这类字眼。\n- 境外不通时仍走「境内更新源」和「从本地文件更新」两条兜底，能力不变；\n  旧配置文件里残留的字段不再被读取，无需手工清理。\n- `selftest.py` 的必需接口清单同步更新。",
+  "url": "https://github.com/Yum0Rin/cx-downloader/releases/tag/v1.4.7",
+  "published_at": "2026-11-14T07:47:13Z",
   "assets": [
     {
-      "name": "cx-downloader-v1.4.6-windows.exe",
-      "size": 15170890,
-      "sha256": "1980f5c90f493f10499c401d365044eea18f92b3e3ae1fb49c407c41ac27b762",
-      "url": "https://gitee.com/yum0rin/cx-downloader-update/releases/download/v1.4.6/cx-downloader-v1.4.6-windows.exe"
+      "name": "cx-downloader-v1.4.7-windows.exe",
+      "size": 15170085,
+      "sha256": "42cafc43b8f37e080adfb082cd953d2b68c89fe29ca7887df539dd55d64e7969",
+      "url": "https://gitee.com/yum0rin/cx-downloader-update/releases/download/v1.4.7/cx-downloader-v1.4.7-windows.exe"
     },
     {
-      "name": "cx-downloader-v1.4.6-windows.exe",
-      "size": 15170890,
-      "sha256": "1980f5c90f493f10499c401d365044eea18f92b3e3ae1fb49c407c41ac27b762",
-      "url": "https://github.com/Yum0Rin/cx-downloader/releases/download/v1.4.6/cx-downloader-v1.4.6-windows.exe"
+      "name": "cx-downloader-v1.4.7-windows.exe",
+      "size": 15170085,
+      "sha256": "42cafc43b8f37e080adfb082cd953d2b68c89fe29ca7887df539dd55d64e7969",
+      "url": "https://github.com/Yum0Rin/cx-downloader/releases/download/v1.4.7/cx-downloader-v1.4.7-windows.exe"
     }
   ]
 }
