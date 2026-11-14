@@ -202,6 +202,32 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 
 </details>
 
+**用 Gitee 托管清单（校园网等境外不稳定的环境）**
+
+1. 在 Gitee 建一个**公开**仓库，把 `packaging/latest.json` 放进去。清单用下面的脚本生成/更新：
+
+   ```powershell
+   python packaging/make_update_manifest.py                        # 从 GitHub API 拉最新 Release
+   python packaging/make_update_manifest.py --release-json r.json  # 离线 / CI，r.json 是同格式 Release JSON
+   ```
+
+2. raw 地址格式：`https://gitee.com/<owner>/<repo>/raw/<branch>/latest.json`
+   （实测会 302 到 `raw.giteeusercontent.com`，程序会自动跟随，校园网 0.66s 可达）。
+   把这个地址填进「设置 → 关于 → 境内更新源」即可。
+   只托管清单、不镜像 exe 也有效：版本检查走境内，下载仍可退回 GitHub 或改用「从本地文件更新」。
+
+3. **15MB 的 exe 不能放仓库 raw**：Gitee 对公开仓库大于 10MB 的原始数据要求登录（返回 403）。
+   要境内下载就把 exe 放 **Gitee Release 附件**，生成清单时加
+
+   ```powershell
+   python packaging/make_update_manifest.py `
+     --asset-base "https://gitee.com/<owner>/<repo>/releases/download/{tag}"
+   ```
+
+   清单里会输出同一 exe 的两个下载地址（境内附件在前、GitHub 在后），下载器按顺序逐个回退。
+
+4. Gitee raw 有 60~300 秒缓存：发新版后别立刻检查，或换个文件名绕开缓存。
+
 **提醒的两种关闭方式**：「稍后再说」只是关掉这次，下次启动还会提醒；
 「不再提示此版本」只忽略当前版本，下个版本仍会弹。
 
