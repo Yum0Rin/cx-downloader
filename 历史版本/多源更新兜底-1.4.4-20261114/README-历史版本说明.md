@@ -69,7 +69,15 @@ CHANGELOG.md         9A9248BA762F337FB262DF151E07868A9DDEB850AF8CB4E5163141F421A
 
 **发版**：用户授权后发布为 **v1.4.5**（不复用 1.4.4，因为桌面 / `dist` 里那份 1.4.4 是
 改动前的旧包，同名会让旧包 `check_update()` 认为「已是最新」而永远收不到更新）。
-CI 打 tag 触发三平台构建并挂 Release，Release 正文取 CHANGELOG 的 `[1.4.5]` 段。
+commit `2f0f64d` → tag `v1.4.5` → CI run `43567839591`，三平台 job 全部成功
+（47s / 57s / 47s），Release 三个资产齐全且带 sha256，正文取 CHANGELOG 的 `[1.4.5]` 段。
+
+推送时第一次 `git push` 报 `HTTP 500 / unexpected disconnect`（git 走 `github.com`，
+而该域名被本机 FastGithub 劫持转发）；改用 `http.version=HTTP/1.1` +
+`http.postBuffer=524288000` 重试一次即成功，**全程未开代理**。
+
+真实链路验证（非合成）：以旧版 `1.4.4` 身份调 `check_update(current="1.4.4")`，
+从 GitHub API 拿到 `v1.4.5` / 资产 URL / size 15169124 / sha256，与 Release 一致。
 
 **没做/留给后续**：`latest.json` 的生成与同步到境内静态托管（需用户提供托管地址）；
 资产 CDN 全量下载验证（当前该域名仍超时，不反复硬试，
