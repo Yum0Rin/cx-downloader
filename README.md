@@ -206,6 +206,8 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 
 本项目实际使用的境内源：`https://gitee.com/yum0rin/cx-downloader-update/raw/master/latest.json`
 （公开仓库，发新版后用下面的脚本重新生成 `latest.json` 并同步过去即可）。
+exe 镜像挂在同一仓库的 Release 附件：`https://gitee.com/yum0rin/cx-downloader-update/releases/download/{tag}/`，
+生成清单时把这个地址传给 `--asset-base`。
 
 1. 在 Gitee 建一个**公开**仓库，把 `packaging/latest.json` 放进去。清单用下面的脚本生成/更新：
 

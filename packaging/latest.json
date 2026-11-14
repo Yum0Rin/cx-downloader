@@ -10,6 +10,12 @@
       "name": "cx-downloader-v1.4.5-windows.exe",
       "size": 15169124,
       "sha256": "c89b08fe09e981ef4518a68b2499813f2f4e521318b2bec522daa8f364e76fd1",
+      "url": "https://gitee.com/yum0rin/cx-downloader-update/releases/download/v1.4.5/cx-downloader-v1.4.5-windows.exe"
+    },
+    {
+      "name": "cx-downloader-v1.4.5-windows.exe",
+      "size": 15169124,
+      "sha256": "c89b08fe09e981ef4518a68b2499813f2f4e521318b2bec522daa8f364e76fd1",
       "url": "https://github.com/Yum0Rin/cx-downloader/releases/download/v1.4.5/cx-downloader-v1.4.5-windows.exe"
     }
   ]
