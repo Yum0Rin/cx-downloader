@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import queue
@@ -1881,6 +1882,10 @@ class App(ctk.CTk):
                     f"cx-downloader-{info['version']}-new.exe")
                 total = int(info.get("asset_size") or 0)
                 proxy = (load_settings().get("update_proxy") or "").strip()
+                if not proxy:
+                    # 没手填就用系统代理（Clash / v2ray 的「系统代理」开关），
+                    # urllib 默认只读环境变量，读不到 Windows 这份设置
+                    proxy = core.system_proxy()
                 # 已有残包时先把进度亮出来，让用户知道这次是接着下
                 if os.path.exists(tmp):
                     self.q.put(("update_progress",
@@ -1892,6 +1897,21 @@ class App(ctk.CTk):
                 if total and size != total:
                     raise RuntimeError(
                         f"下载大小不符：{size}/{total}（再点一次会接着下）")
+                digest = str(info.get("asset_digest") or "")
+                if digest.startswith("sha256:"):
+                    want = digest.split(":", 1)[1].strip().lower()
+                    h = hashlib.sha256()
+                    with open(tmp, "rb") as f:
+                        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                            h.update(chunk)
+                    if h.hexdigest() != want:
+                        try:
+                            os.remove(tmp)   # 内容对不上，留着只会反复失败
+                        except OSError:
+                            pass
+                        raise RuntimeError(
+                            "更新包校验不通过（sha256 与 Release 不一致），"
+                            "已删除；请重试，或用「浏览器下载」手动更新")
                 with open(tmp, "rb") as f:
                     if f.read(2) != b"MZ":
                         try:

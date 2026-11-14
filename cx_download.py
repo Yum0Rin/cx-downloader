@@ -1567,6 +1567,38 @@ def describe_object(cookie: str | None, oid: str, timeout: int = 60) -> dict:
     }
 
 
+def system_proxy() -> str:
+    """系统代理地址（目前只读 Windows 的「Internet 选项」代理设置），没有就返回 ""。
+
+    一键更新要连 GitHub 资产 CDN，国内很多人开着 Clash / v2ray 的「系统代理」。
+    urllib 默认只认 `http_proxy` / `https_proxy` 环境变量，读不到这里的设置，
+    所以下载更新包前先问一句系统代理，省得用户以为工具坏了。
+    """
+    if not sys.platform.startswith("win"):
+        return ""
+    try:
+        import winreg
+        key = (r"Software\Microsoft\Windows\CurrentVersion"
+               r"\Internet Settings")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+            enabled, _ = winreg.QueryValueEx(k, "ProxyEnable")
+            if not int(enabled):
+                return ""
+            server, _ = winreg.QueryValueEx(k, "ProxyServer")
+    except Exception:  # noqa: BLE001
+        return ""
+    s = str(server or "").strip()
+    if not s:
+        return ""
+    # 形如 "http=127.0.0.1:7897;https=127.0.0.1:7897" 时取 https/http 那一段
+    if "=" in s:
+        parts = dict(p.split("=", 1) for p in s.split(";") if "=" in p)
+        s = (parts.get("https") or parts.get("http") or "").strip()
+    if not s:
+        return ""
+    return s if "://" in s else "http://" + s
+
+
 def parse_version(v: str) -> tuple[int, ...]:
     """把 v1.2.3 这种字符串拆成可比较的元组。"""
     nums = re.findall(r"\d+", v or "")
@@ -1613,6 +1645,8 @@ def check_update(current: str | None = None, timeout: int = 12) -> dict | None:
             info["asset_url"] = win.get("browser_download_url") or ""
             info["asset_size"] = int(win.get("size") or 0)
             info["asset_name"] = win.get("name") or ""
+            # GitHub 现在给资产带 sha256 摘要（形如 "sha256:abc..."），有就拿来校验
+            info["asset_digest"] = str(win.get("digest") or "")
         return info
 
     return _check_update_html(current, timeout)
