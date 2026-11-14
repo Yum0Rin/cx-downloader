@@ -98,7 +98,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
-__version__ = "1.4.6"
+__version__ = "1.4.7"
 GITHUB_REPO = "Yum0Rin/cx-downloader"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"
@@ -1569,46 +1569,14 @@ def describe_object(cookie: str | None, oid: str, timeout: int = 60) -> dict:
     }
 
 
-def system_proxy() -> str:
-    """读取已经存在的 Windows「Internet 选项」代理设置，没有就返回 ""。
-
-    只读取、不启动也不修改任何代理。urllib 默认只认 `http_proxy` /
-    `https_proxy` 环境变量，读不到这里的设置，所以下载前顺带问一句。
-    校园网这类不能开代理的环境保持留空即可，兜底走境内更新源 / 本地 exe。
-    """
-    if not sys.platform.startswith("win"):
-        return ""
-    try:
-        import winreg
-        key = (r"Software\Microsoft\Windows\CurrentVersion"
-               r"\Internet Settings")
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
-            enabled, _ = winreg.QueryValueEx(k, "ProxyEnable")
-            if not int(enabled):
-                return ""
-            server, _ = winreg.QueryValueEx(k, "ProxyServer")
-    except Exception:  # noqa: BLE001
-        return ""
-    s = str(server or "").strip()
-    if not s:
-        return ""
-    # 形如 "http=127.0.0.1:7897;https=127.0.0.1:7897" 时取 https/http 那一段
-    if "=" in s:
-        parts = dict(p.split("=", 1) for p in s.split(";") if "=" in p)
-        s = (parts.get("https") or parts.get("http") or "").strip()
-    if not s:
-        return ""
-    return s if "://" in s else "http://" + s
-
-
 def parse_version(v: str) -> tuple[int, ...]:
     """把 v1.2.3 这种字符串拆成可比较的元组。"""
     nums = re.findall(r"\d+", v or "")
     return tuple(int(x) for x in nums[:3]) or (0,)
 
 
-# 境内更新清单（latest.json）协议 —— 给「境外不通、又不能开代理」的网络用。
-# 托管在任意境内可达的静态地址即可，程序只发 GET，不需要服务端脚本、不需要代理。
+# 境内更新清单（latest.json）协议 —— 给境外不通的网络用。
+# 托管在任意境内可达的静态地址即可，程序只发 GET，不需要服务端脚本。
 # {
 #   "version": "1.4.5", "tag": "v1.4.5", "name": "v1.4.5",
 #   "body": "更新说明", "url": "https://.../releases", "published_at": "2026-11-14",

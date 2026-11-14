@@ -1,0 +1,366 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""冻结后自检 —— 在打包好的 exe 里运行，验证「真正出货的那个包」。
+
+为什么放在 exe 里而不是另编一个自检 exe：
+另编的自检 exe 有自己的打包参数，验不了主 exe 的依赖收集情况。放进主 exe 后，
+`超星文件下载器.exe --selftest` 验的就是真正要发给别人的那个二进制。
+
+用法：
+    超星文件下载器.exe --selftest                 # 用内置样例 objectid
+    超星文件下载器.exe --selftest <oid> [<oid>…]  # 指定 objectid
+    超星文件下载器.exe --selftest --no-network    # 只验打包完整性，不联网
+    python selftest.py                            # 源码态直接跑
+
+报告写到 %TEMP%\\cx_download_selftest.txt，退出码 0=通过 / 1=失败。
+（--windowed 的 exe 没有 stdout，所以必须落盘报告，否则构建脚本无从判断。）
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import tempfile
+import time
+
+# 内置样例：学习通公开预览文件，不依赖登录。若哪天失效，
+# 用命令行参数或环境变量 CX_SELFTEST_OIDS 覆盖即可。
+DEFAULT_OIDS = [
+    "e934d91c35851d5bcbf3338d41648aea",  # 公开预览样例 1
+    "39a58c0915664f14110611625ef5d07b",  # 公开预览样例 2
+]
+
+# 当前 core 必须提供的符号，用来确认打进包的是「新版本」而不是陈旧的 core
+REQUIRED_CORE_ATTRS = [
+    "process_one", "fetch_status", "extract_objectids",
+    "scan_course", "scan_course_data", "download_data_one",
+    "parse_attachments", "fetch_account_name",
+    "check_local_course", "find_local_course_dir", "is_special_file",
+    "fetch_course_name_robust", "fetch_course_list", "course_time_status",
+    "system_proxy", "parse_mirror_urls", "check_exe_package", "check_update",
+    "MIRROR_PRIORITY_SEC",
+]
+
+# 合成样例（不是真实 Release）：验证「境外不通时走境内清单」的解析链路
+MANIFEST_SAMPLE = {
+    "version": "9.9.9",
+    "tag": "v9.9.9",
+    "name": "v9.9.9",
+    "body": "合成样例，仅用于自检",
+    "url": "https://example.invalid/releases",
+    "assets": [
+        {"name": "cx-downloader-v9.9.9-windows.exe",
+         "url": "https://example.invalid/cx.exe",
+         "size": 15575745,
+         "sha256": "00" * 32},
+    ],
+}
+
+# 章节页附件解析的回归样例：学习通现网三种写法混排（objectid 是占位值）。
+# 第一、二条是同一个 objectid 的重复 data（新版外层容器 + 内层 iframe 各带一份），
+# 必须只算一个 —— 老代码按 class 名抓，这里会 1 条都抓不到。
+CARD_SAMPLE = (
+    '<div class="ans-attach-ct"><iframe class="downloadfile" data="{&quot;objectid&quot;:'
+    '&quot;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&quot;,&quot;name&quot;:&quot;课件.docx&quot;,'
+    '&quot;type&quot;:&quot;.docx&quot;,&quot;hsize&quot;:&quot;1.00 MB&quot;}"></iframe></div>'
+    '<div class="ans-attach-ct"><iframe class="downloadfile" data="{&quot;objectid&quot;:'
+    '&quot;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&quot;,&quot;name&quot;:&quot;课件.docx&quot;}">'
+    '</iframe></div>'
+    '<iframe class="ans-attach-online" data="{&quot;objectid&quot;:'
+    '&quot;bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&quot;,&quot;name&quot;:&quot;视频.mp4&quot;,'
+    '&quot;type&quot;:&quot;.mp4&quot;}"></iframe>'
+    '<iframe class="ans-module ans-insertdoc-retract" module="insertdoc" data="{&quot;objectid&quot;:'
+    '&quot;cccccccccccccccccccccccccccccccc&quot;,&quot;name&quot;:&quot;大纲.docx&quot;,'
+    '&quot;type&quot;:&quot;.docx&quot;}"></iframe>'
+)
+
+DEFAULT_REPORT = os.path.join(tempfile.gettempdir(), "cx_download_selftest.txt")
+
+
+class Report:
+    def __init__(self):
+        self.lines: list[str] = []
+        self.failed = 0
+
+    def ok(self, msg: str):
+        self.lines.append(f"[PASS] {msg}")
+        self._echo(f"[PASS] {msg}")
+
+    def bad(self, msg: str):
+        self.lines.append(f"[FAIL] {msg}")
+        self._echo(f"[FAIL] {msg}")
+        self.failed += 1
+
+    def info(self, msg: str):
+        self.lines.append(f"       {msg}")
+        self._echo(f"       {msg}")
+
+    @staticmethod
+    def _echo(msg: str):
+        # --windowed 的 exe 里 sys.stdout 可能是 None，print 会炸
+        try:
+            print(msg, flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _check_bundle(rep: Report):
+    """① 打包完整性：core 是否随包、是不是新版、CTk 资源是否在。"""
+    frozen = getattr(sys, "frozen", False)
+    rep.info(f"frozen = {frozen}, meipass = {getattr(sys, '_MEIPASS', None)}")
+
+    # core 模块（两文件结构的关键：cx_download.py 必须被一起收进来）
+    try:
+        import cx_download as core  # noqa: PLC0415
+
+        missing = [a for a in REQUIRED_CORE_ATTRS if not hasattr(core, a)]
+        if missing:
+            rep.bad(f"cx_download 缺少符号 {missing} —— 打进包的很可能是旧版 core")
+        else:
+            rep.ok(f"cx_download 已随包，且含新符号（{', '.join(REQUIRED_CORE_ATTRS)}）")
+        rep.info(f"cx_download.__file__ = {getattr(core, '__file__', '?')}")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"import cx_download 失败: {e!r}")
+
+    # customtkinter 的数据文件（主题 JSON / 字体 / 图标）
+    try:
+        import customtkinter  # noqa: PLC0415
+
+        base = os.path.dirname(customtkinter.__file__)
+        need = [
+            os.path.join("assets", "themes", "blue.json"),
+            os.path.join("assets", "themes", "dark-blue.json"),
+            os.path.join("assets", "fonts", "CustomTkinter_shapes_font.otf"),
+        ]
+        missing = [p for p in need if not os.path.exists(os.path.join(base, p))]
+        if missing:
+            rep.bad(f"customtkinter 资源缺失 {missing} —— 忘了 --collect-all？会白屏/全黑")
+        else:
+            rep.ok("customtkinter 主题/字体资源齐全")
+        rep.info(f"customtkinter {customtkinter.__version__} @ {base}")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"customtkinter 检查失败: {e!r}")
+
+    # GUI 模块本身能否导入（顺带确认它依赖的 tkinter 等都在）
+    try:
+        import cx_download_gui  # noqa: F401, PLC0415
+
+        rep.ok("cx_download_gui 可导入")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"import cx_download_gui 失败: {e!r}")
+
+
+def _check_parser(rep: Report):
+    """② 附件解析（脱网）：三种模板写法都要能抓出来，重复的 data 只算一次。"""
+    import cx_download as core  # noqa: PLC0415
+
+    try:
+        got = core.parse_attachments(CARD_SAMPLE)
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"parse_attachments 抛异常: {e!r}")
+        return
+    names = [x["name"] for x in got]
+    if len(got) == 3 and "课件.docx" in names and "视频.mp4" in names and "大纲.docx" in names:
+        rep.ok(f"附件解析三种模板都命中，去重后 {len(got)} 条")
+    else:
+        rep.bad(f"附件解析异常：期望 3 条（课件/视频/大纲），实际 {len(got)} 条 {names}")
+
+
+def _check_update_logic(rep: Report):
+    """③ 更新兜底（脱网）：清单解析、源列表、302 兜底、离线包校验。"""
+    import cx_download as core  # noqa: PLC0415
+
+    try:
+        urls = core.parse_mirror_urls(
+            "https://a.example/x.json\n# 注释\nhttp://b.example/y.json\n"
+            "https://a.example/x.json\n不是 URL")
+        if urls == ["https://a.example/x.json", "http://b.example/y.json"]:
+            rep.ok("境内更新源解析：去注释 / 去重 / 过滤非 URL")
+        else:
+            rep.bad(f"境内更新源解析异常：{urls}")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"parse_mirror_urls 抛异常: {e!r}")
+
+    try:
+        info = core._release_info(MANIFEST_SAMPLE, "1.4.4", "境内更新清单")
+        if (info and info["version"] == "9.9.9"
+                and info["asset_urls"] == ["https://example.invalid/cx.exe"]
+                and info["asset_digest"] == "sha256:" + "00" * 32
+                and info["source"] == "境内更新清单"):
+            rep.ok("境内清单解析：版本 / 下载地址 / sha256 / 来源都正确")
+        else:
+            rep.bad(f"境内清单解析异常：{info}")
+        stale = dict(MANIFEST_SAMPLE, version="1.0.0", tag="v1.0.0")
+        if core._release_info(stale, "1.4.4", "x") is None:
+            rep.ok("旧版本清单不会误报更新")
+        else:
+            rep.bad("旧版本清单被当成了新版本")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"清单解析抛异常: {e!r}")
+
+    try:
+        h = core._html_release_info(
+            "https://github.com/Yum0Rin/cx-downloader/releases/tag/v9.9.8",
+            "1.4.4")
+        if h and h["version"] == "9.9.8" and len(h["asset_urls"]) == 1:
+            rep.ok("GitHub Release 页 302 兜底仍可用")
+        else:
+            rep.bad(f"302 兜底解析异常：{h}")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"302 兜底抛异常: {e!r}")
+
+    try:
+        d = tempfile.mkdtemp(prefix="cxselftest_pkg_")
+        good = os.path.join(d, "good.exe")
+        with open(good, "wb") as f:
+            f.write(b"MZ" + b"\0" * (1024 * 1024 + 10))
+        ok, why = core.check_exe_package(good)
+        if ok:
+            rep.ok("离线包校验：合法的合成 exe 通过")
+        else:
+            rep.bad(f"离线包校验误拒合法文件：{why}")
+        bad = os.path.join(d, "bad.exe")
+        with open(bad, "wb") as f:
+            f.write(b"NO" + b"\0" * (1024 * 1024 + 10))
+        small = os.path.join(d, "small.exe")
+        with open(small, "wb") as f:
+            f.write(b"MZ")
+        ok2, _ = core.check_exe_package(bad)
+        ok3, _ = core.check_exe_package(small)
+        ok4, _ = core.check_exe_package(good, "sha256:" + "11" * 32)
+        if not ok2 and not ok3 and not ok4:
+            rep.ok("离线包校验：非 MZ / 过小 / sha256 不符都被拒绝")
+        else:
+            rep.bad(f"离线包校验漏判：非MZ={ok2} 过小={ok3} sha={ok4}")
+        shutil.rmtree(d, ignore_errors=True)
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"离线包校验抛异常: {e!r}")
+
+
+def _check_mirror_priority(rep: Report):
+    """④ 境内源优先窗口（脱网，假源模拟延迟）：GitHub 更快也要先用境内清单。"""
+    import cx_download as core  # noqa: PLC0415
+
+    orig = core._fetch_release
+    gh = {
+        "version": "9.9.8", "tag": "v9.9.8",
+        "assets": [{"name": "cx.exe", "url": "https://github.example/cx.exe",
+                    "size": 1000000, "sha256": "11" * 32}],
+    }
+    mf = {
+        "version": "9.9.9", "tag": "v9.9.9",
+        "assets": [{"name": "cx.exe", "url": "https://gitee.example/cx.exe",
+                    "size": 1000000, "sha256": "00" * 32},
+                   {"name": "cx.exe", "url": "https://github.example/cx.exe",
+                    "size": 1000000, "sha256": "00" * 32}],
+    }
+
+    def github_first(kind, url, current, timeout):
+        if kind == "manifest":
+            time.sleep(0.15)          # 境内稍慢，模拟真实网络
+            return core._release_info(mf, current, "境内更新清单")
+        return core._release_info(gh, current, "GitHub API")
+
+    def mirror_down(kind, url, current, timeout):
+        if kind == "manifest":
+            raise RuntimeError("合成：境内源挂掉")
+        return core._release_info(gh, current, "GitHub API")
+
+    try:
+        core._fetch_release = github_first
+        info = core.check_update(mirrors=["https://mirror.example/latest.json"],
+                                 current="1.4.4", timeout=2)
+        if (info and info["source"] == "境内更新清单"
+                and len(info["asset_urls"]) == 2):
+            rep.ok("境内源优先：GitHub 先回也仍使用境内清单的两个下载地址")
+        else:
+            rep.bad(f"境内源没被优先：{info and info.get('source')} "
+                    f"地址数={info and len(info.get('asset_urls') or [])}")
+
+        core._fetch_release = mirror_down
+        info2 = core.check_update(mirrors=["https://mirror.example/latest.json"],
+                                  current="1.4.4", timeout=2)
+        if info2 and info2["source"] == "GitHub API":
+            rep.ok("境内源挂掉时仍回退到 GitHub，不卡死")
+        else:
+            rep.bad(f"境内源挂掉后没回退：{info2 and info2.get('source')}")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"优先窗口自检抛异常: {e!r}")
+    finally:
+        core._fetch_release = orig
+
+
+def _check_network(rep: Report, objectids: list[str], timeout: int = 60):
+    """② 联网 + 写盘：HTTPS 走系统证书库，冻结后不一定还灵，必须实测。"""
+    import cx_download as core  # noqa: PLC0415
+
+    out = tempfile.mkdtemp(prefix="cxselftest_")
+    rep.info(f"下载到 {out}")
+
+    for oid in objectids:
+        try:
+            st = core.fetch_status(oid, None, timeout)
+        except Exception as e:  # noqa: BLE001
+            rep.bad(f"{oid} 状态接口失败: {e!r}（样例可能已失效，可用参数覆盖）")
+            continue
+        if st.get("status") != "success":
+            rep.bad(f"{oid} 接口返回 status={st.get('status')!r}")
+            continue
+
+        r = core.process_one(oid, out, True, True, None, timeout, True)
+        if not r.get("ok"):
+            rep.bad(f"{oid} 下载失败: {r.get('error')}")
+            continue
+
+        good = True
+        for dest, size, _note in r["files"]:
+            if not os.path.exists(dest) or os.path.getsize(dest) == 0:
+                good = False
+            rep.info(f"{os.path.basename(dest)}  {size} B")
+        if good:
+            rep.ok(f"{r.get('filename')} 原件+PDF 下载并落盘正常")
+        else:
+            rep.bad(f"{oid} 下载后文件缺失或为空")
+
+
+def run(objectids: list[str] | None = None, network: bool = True,
+        report_path: str | None = None) -> bool:
+    t0 = time.time()
+    rep = Report()
+
+    env = os.environ.get("CX_SELFTEST_OIDS", "").strip()
+    oids = objectids or ([o for o in env.replace(",", " ").split() if o] or DEFAULT_OIDS)
+
+    rep.info("=" * 60)
+    rep.info(f"cx-download 冻结自检  python {sys.version.split()[0]}")
+    rep.info("=" * 60)
+
+    _check_bundle(rep)
+    _check_parser(rep)
+    _check_update_logic(rep)
+    _check_mirror_priority(rep)
+    if network:
+        _check_network(rep, oids)
+    else:
+        rep.info("跳过联网检查（--no-network）")
+
+    passed = rep.failed == 0
+    rep.info("-" * 60)
+    rep.info(f"SELFTEST {'PASS' if passed else 'FAIL'}  耗时 {time.time() - t0:.1f}s")
+    rep._echo(f"SELFTEST {'PASS' if passed else 'FAIL'}")
+
+    path = report_path or DEFAULT_REPORT
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(rep.lines) + "\n")
+        rep._echo(f"报告: {path}")
+    except Exception as e:  # noqa: BLE001
+        rep._echo(f"报告写入失败: {e!r}")
+
+    return passed
+
+
+if __name__ == "__main__":
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    sys.exit(0 if run(args, network="--no-network" not in sys.argv) else 1)

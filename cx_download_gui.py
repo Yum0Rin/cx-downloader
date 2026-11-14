@@ -57,7 +57,7 @@ class UpdatePaused(RuntimeError):
 
 
 def download_update_package(asset: str, tmp: str, total: int = 0,
-                            proxy: str = "", progress=None,
+                            progress=None,
                             budget: float = 300.0,
                             conn_timeout: int = 20) -> int:
     """把更新包下到 tmp，支持断点续传，返回最终字节数。
@@ -69,13 +69,7 @@ def download_update_package(asset: str, tmp: str, total: int = 0,
     - 两次尝试都失败抛 RuntimeError，残包同样保留。
     - `conn_timeout` 是单次 socket 读超时，换源时会调小，避免挂死的源拖住整个更新。
     """
-    if proxy and "://" not in proxy:
-        proxy = "http://" + proxy
-    if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    else:
-        opener = urllib.request.build_opener()
+    opener = urllib.request.build_opener()
 
     last: Exception | None = None
     for attempt in range(2):
@@ -1214,8 +1208,6 @@ class App(ctk.CTk):
         self.auto_skip = ctk.BooleanVar(value=bool(cfg.get("auto_skip", True)))
         self.scan_cache = ctk.BooleanVar(value=bool(cfg.get("scan_cache", True)))
         self.cookie = ctk.StringVar(value=cfg.get("cookie") or "")
-        # 可选：已存在的下载代理设置（一般留空；校园网请走境内更新源 / 本地 exe）
-        self.upd_proxy = ctk.StringVar(value=cfg.get("update_proxy") or "")
         self.appearance = ctk.StringVar(value=cfg.get("appearance") or "跟随系统")
         # 目录层级：勾中的才会真的建目录。默认只建「课程名」一级，跟老行为一致。
         lv = cfg.get("levels") or {}
@@ -1608,7 +1600,7 @@ class App(ctk.CTk):
             self._btn(row_links, "请作者喝杯奶茶", self._show_support,
                       width=124).pack(side="left", padx=(8, 0))
 
-        # 校园网这类「境外不通、也不能开代理」的环境，靠境内清单 / 本地 exe 兜底
+        # 校园网这类境外不通的环境，靠境内清单 / 本地 exe 兜底
         ctk.CTkLabel(
             wrap, text="境内更新源（每行一个 latest.json 地址，# 后为注释）",
             anchor="w", font=ctk.CTkFont(FONT, 12), text_color=pair("text"),
@@ -1622,7 +1614,7 @@ class App(ctk.CTk):
         box_mirrors.insert("1.0", str(load_settings().get("update_mirrors") or ""))
         ctk.CTkLabel(
             wrap, text="境外不通时填一个境内可达的更新清单地址，检查更新和下载都会优先走它；"
-                       "完全不通就直接用下面的「从本地文件更新」。不需要开任何代理。",
+                       "完全不通就直接用下面的「从本地文件更新」。",
             anchor="w", justify="left", wraplength=520,
             font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
         ).pack(fill="x", padx=16, pady=(2, 0))
@@ -1631,21 +1623,6 @@ class App(ctk.CTk):
         row_offline.pack(fill="x", padx=16, pady=(8, 0))
         self._btn(row_offline, "从本地文件更新…", self._import_local_exe,
                   width=140).pack(side="left")
-
-        row_proxy = ctk.CTkFrame(wrap, fg_color="transparent")
-        row_proxy.pack(fill="x", padx=16, pady=(8, 0))
-        ctk.CTkLabel(
-            row_proxy, text="更新下载代理（一般留空）", anchor="w",
-            font=ctk.CTkFont(FONT, 12), text_color=pair("muted"),
-        ).pack(side="left")
-        ctk.CTkEntry(
-            row_proxy, textvariable=self.upd_proxy, height=30,
-            corner_radius=8, border_width=1, border_color=pair("input_border"),
-            fg_color=pair("input"), text_color=pair("text"),
-            placeholder_text="留空即可",
-            placeholder_text_color=pair("muted"),
-            font=ctk.CTkFont(FONT, 11),
-        ).pack(side="left", fill="x", expand=True, padx=(8, 0))
 
         # 交流 / 反馈：一行字 + 一键复制群号
         row_qq = ctk.CTkFrame(wrap, fg_color="transparent")
@@ -1706,7 +1683,6 @@ class App(ctk.CTk):
             d["accent"] = self._accent_pick
             d["appearance"] = self.appearance.get()
             d["scan_cache"] = bool(self.scan_cache.get())
-            d["update_proxy"] = self.upd_proxy.get().strip()
             d["update_mirrors"] = box_mirrors.get("1.0", "end").strip()
             save_settings(d)
             self.accent = self._accent_pick
@@ -1909,9 +1885,6 @@ class App(ctk.CTk):
             urls = list(info.get("asset_urls") or [])
             if not urls:
                 urls = [asset]
-            proxy = (load_settings().get("update_proxy") or "").strip()
-            if not proxy:
-                proxy = core.system_proxy()
             tmp = os.path.join(
                 tempfile.gettempdir(),
                 f"cx-downloader-{info['version']}-new.exe")
@@ -1936,7 +1909,7 @@ class App(ctk.CTk):
                         self.q.put(("update_progress",
                                     (os.path.getsize(tmp), total)))
                     size = download_update_package(
-                        url, tmp, total, proxy,
+                        url, tmp, total,
                         progress=lambda got, tot: self.q.put(
                             ("update_progress", (got, tot))),
                         budget=120, conn_timeout=15)

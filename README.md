@@ -163,7 +163,7 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 **macOS / Linux / 源码运行**：弹窗里只有「下载新版本」，浏览器下载后自行替换；
 配置文件 `~/.cx_download_gui.json` 不受影响。
 
-**境外访问不稳定 / 部分 GitHub 域名卡住、又不能开代理**：不需要开任何代理，两条兜底路径：
+**境外访问不稳定 / 部分 GitHub 域名卡住时**，两条兜底路径：
 
 1. **境内更新源**：在「设置 → 关于 → 境内更新源」里每行填一个 `latest.json` 地址
    （`#` 后面可写注释），检查更新和下载都会优先走它。清单格式见下方「更新清单协议」。
@@ -176,7 +176,7 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 <details>
 <summary>更新清单协议（latest.json）</summary>
 
-放在任意境内可达的静态托管上即可，程序只发 GET，不需要服务端脚本、不需要代理。
+放在任意境内可达的静态托管上即可，程序只发 GET，不需要服务端脚本。
 发布新版本时把它和 GitHub Release 一起更新，否则会停在旧版本。
 
 ```json

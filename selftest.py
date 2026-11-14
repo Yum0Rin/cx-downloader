@@ -38,7 +38,7 @@ REQUIRED_CORE_ATTRS = [
     "parse_attachments", "fetch_account_name",
     "check_local_course", "find_local_course_dir", "is_special_file",
     "fetch_course_name_robust", "fetch_course_list", "course_time_status",
-    "system_proxy", "parse_mirror_urls", "check_exe_package", "check_update",
+    "parse_mirror_urls", "check_exe_package", "check_update",
     "MIRROR_PRIORITY_SEC",
 ]
 
