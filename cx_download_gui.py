@@ -25,6 +25,7 @@ import json
 import os
 import queue
 import tempfile
+import urllib.error
 import urllib.request
 import re
 import subprocess
@@ -49,6 +50,82 @@ QUEUE_FILE = os.path.join(os.path.expanduser("~"), ".cx_download_queue.json")
 # 不写这里就没法告诉用户「其实没换成」——装在没有写权限的目录时会静默失败。
 UPDATE_STATUS = os.path.join(tempfile.gettempdir(), "cx-self-update-status.txt")
 QQ_GROUP = "1129676506"
+
+
+class UpdatePaused(RuntimeError):
+    """下载超时 / 被中止，但残包保留、可以续传。"""
+
+
+def download_update_package(asset: str, tmp: str, total: int = 0,
+                            proxy: str = "", progress=None,
+                            budget: float = 300.0) -> int:
+    """把更新包下到 tmp，支持断点续传，返回最终字节数。
+
+    - `%TEMP%` 里同版本的残包直接复用，带 `Range: bytes=<done>-` 接着下；
+    - 服务端忽略 Range（回 200）时退化成整包重下；
+    - 416 视为「已经下到末尾」；
+    - 单次尝试超过 `budget` 秒抛 UpdatePaused，**残包保留**，下次点「一键更新」接着下；
+    - 两次尝试都失败抛 RuntimeError，残包同样保留。
+    """
+    if proxy and "://" not in proxy:
+        proxy = "http://" + proxy
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    else:
+        opener = urllib.request.build_opener()
+
+    last: Exception | None = None
+    for attempt in range(2):
+        done = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+        if total and done >= total:
+            break                       # 残包已经完整，直接进校验
+        headers = {"User-Agent": core.UA}
+        if done:
+            headers["Range"] = f"bytes={done}-"
+        try:
+            req = urllib.request.Request(asset, headers=headers)
+            started = time.time()
+            with opener.open(req, timeout=120) as r:
+                # 服务端忽略 Range（回 200）→ 只能从头写
+                if done and getattr(r, "status", 200) == 200:
+                    done = 0
+                with open(tmp, "ab" if done else "wb") as f:
+                    while True:
+                        chunk = r.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if progress:
+                            progress(done, total)
+                        if time.time() - started > budget:
+                            raise UpdatePaused(
+                                "这次下载超过 5 分钟已暂停（已下 "
+                                f"{core.human(done)}"
+                                f"{' / ' + core.human(total) if total else ''}）。"
+                                "残包已保留，再点一次「一键更新」会从断点接着下；"
+                                "也可以改用「浏览器下载」")
+            if total and done < total:
+                # 连接被提前关掉时 read() 只返回 b""，不抛异常 —— 这里补一刀，
+                # 让同一次点击里的第二次尝试接着下，而不是直接报「大小不符」
+                raise RuntimeError(
+                    f"连接提前结束（{core.human(done)} / {core.human(total)}）")
+            break
+        except UpdatePaused:
+            raise
+        except urllib.error.HTTPError as e:
+            # 416：Range 起点已到末尾 → 残包其实就是完整文件
+            if e.code == 416 and done and os.path.exists(tmp):
+                break
+            last = e
+        except Exception as e:  # noqa: BLE001
+            last = e
+        if attempt == 0:
+            time.sleep(1.0)
+    else:
+        raise RuntimeError(f"更新包下载失败：{last}（再点一次会从断点接着下）")
+    return os.path.getsize(tmp) if os.path.exists(tmp) else 0
 
 
 def asset_path(name: str) -> str:
@@ -1787,37 +1864,24 @@ class App(ctk.CTk):
                     tempfile.gettempdir(),
                     f"cx-downloader-{info['version']}-new.exe")
                 total = int(info.get("asset_size") or 0)
-                req = urllib.request.Request(
-                    asset, headers={"User-Agent": core.UA})
                 proxy = (load_settings().get("update_proxy") or "").strip()
-                if proxy and "://" not in proxy:
-                    proxy = "http://" + proxy
-                if proxy:
-                    opener = urllib.request.build_opener(
-                        urllib.request.ProxyHandler(
-                            {"http": proxy, "https": proxy}))
-                else:
-                    opener = urllib.request.build_opener()
-                started = time.time()
-                with opener.open(req, timeout=120) as r, \
-                        open(tmp, "wb") as f:
-                    got = 0
-                    while True:
-                        chunk = r.read(256 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        got += len(chunk)
-                        self.q.put(("update_progress", (got, total)))
-                        if time.time() - started > 300:
-                            raise RuntimeError(
-                                "GitHub 下载超过 5 分钟，已中止；"
-                                "请用「浏览器下载」或设置代理")
-                size = os.path.getsize(tmp)
+                # 已有残包时先把进度亮出来，让用户知道这次是接着下
+                if os.path.exists(tmp):
+                    self.q.put(("update_progress",
+                                (os.path.getsize(tmp), total)))
+                size = download_update_package(
+                    asset, tmp, total, proxy,
+                    progress=lambda got, tot: self.q.put(
+                        ("update_progress", (got, tot))))
                 if total and size != total:
-                    raise RuntimeError(f"下载大小不符：{size}/{total}")
+                    raise RuntimeError(
+                        f"下载大小不符：{size}/{total}（再点一次会接着下）")
                 with open(tmp, "rb") as f:
                     if f.read(2) != b"MZ":
+                        try:
+                            os.remove(tmp)      # 内容不对，留着续传没意义
+                        except OSError:
+                            pass
                         raise RuntimeError("下载的文件不是有效的 Windows exe")
                 self.q.put(("update_ready", (tmp, info)))
             except Exception as e:  # noqa: BLE001
