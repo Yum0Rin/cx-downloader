@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -37,8 +38,23 @@ REQUIRED_CORE_ATTRS = [
     "parse_attachments", "fetch_account_name",
     "check_local_course", "find_local_course_dir", "is_special_file",
     "fetch_course_name_robust", "fetch_course_list", "course_time_status",
-    "system_proxy",
+    "system_proxy", "parse_mirror_urls", "check_exe_package", "check_update",
 ]
+
+# 合成样例（不是真实 Release）：验证「境外不通时走境内清单」的解析链路
+MANIFEST_SAMPLE = {
+    "version": "9.9.9",
+    "tag": "v9.9.9",
+    "name": "v9.9.9",
+    "body": "合成样例，仅用于自检",
+    "url": "https://example.invalid/releases",
+    "assets": [
+        {"name": "cx-downloader-v9.9.9-windows.exe",
+         "url": "https://example.invalid/cx.exe",
+         "size": 15575745,
+         "sha256": "00" * 32},
+    ],
+}
 
 # 章节页附件解析的回归样例：学习通现网三种写法混排（objectid 是占位值）。
 # 第一、二条是同一个 objectid 的重复 data（新版外层容器 + 内层 iframe 各带一份），
@@ -150,6 +166,77 @@ def _check_parser(rep: Report):
         rep.bad(f"附件解析异常：期望 3 条（课件/视频/大纲），实际 {len(got)} 条 {names}")
 
 
+def _check_update_logic(rep: Report):
+    """③ 更新兜底（脱网）：清单解析、源列表、302 兜底、离线包校验。"""
+    import cx_download as core  # noqa: PLC0415
+
+    try:
+        urls = core.parse_mirror_urls(
+            "https://a.example/x.json\n# 注释\nhttp://b.example/y.json\n"
+            "https://a.example/x.json\n不是 URL")
+        if urls == ["https://a.example/x.json", "http://b.example/y.json"]:
+            rep.ok("境内更新源解析：去注释 / 去重 / 过滤非 URL")
+        else:
+            rep.bad(f"境内更新源解析异常：{urls}")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"parse_mirror_urls 抛异常: {e!r}")
+
+    try:
+        info = core._release_info(MANIFEST_SAMPLE, "1.4.4", "境内更新清单")
+        if (info and info["version"] == "9.9.9"
+                and info["asset_urls"] == ["https://example.invalid/cx.exe"]
+                and info["asset_digest"] == "sha256:" + "00" * 32
+                and info["source"] == "境内更新清单"):
+            rep.ok("境内清单解析：版本 / 下载地址 / sha256 / 来源都正确")
+        else:
+            rep.bad(f"境内清单解析异常：{info}")
+        stale = dict(MANIFEST_SAMPLE, version="1.0.0", tag="v1.0.0")
+        if core._release_info(stale, "1.4.4", "x") is None:
+            rep.ok("旧版本清单不会误报更新")
+        else:
+            rep.bad("旧版本清单被当成了新版本")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"清单解析抛异常: {e!r}")
+
+    try:
+        h = core._html_release_info(
+            "https://github.com/Yum0Rin/cx-downloader/releases/tag/v9.9.8",
+            "1.4.4")
+        if h and h["version"] == "9.9.8" and len(h["asset_urls"]) == 1:
+            rep.ok("GitHub Release 页 302 兜底仍可用")
+        else:
+            rep.bad(f"302 兜底解析异常：{h}")
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"302 兜底抛异常: {e!r}")
+
+    try:
+        d = tempfile.mkdtemp(prefix="cxselftest_pkg_")
+        good = os.path.join(d, "good.exe")
+        with open(good, "wb") as f:
+            f.write(b"MZ" + b"\0" * (1024 * 1024 + 10))
+        ok, why = core.check_exe_package(good)
+        if ok:
+            rep.ok("离线包校验：合法的合成 exe 通过")
+        else:
+            rep.bad(f"离线包校验误拒合法文件：{why}")
+        bad = os.path.join(d, "bad.exe")
+        with open(bad, "wb") as f:
+            f.write(b"NO" + b"\0" * (1024 * 1024 + 10))
+        small = os.path.join(d, "small.exe")
+        with open(small, "wb") as f:
+            f.write(b"MZ")
+        ok2, _ = core.check_exe_package(bad)
+        ok3, _ = core.check_exe_package(small)
+        ok4, _ = core.check_exe_package(good, "sha256:" + "11" * 32)
+        if not ok2 and not ok3 and not ok4:
+            rep.ok("离线包校验：非 MZ / 过小 / sha256 不符都被拒绝")
+        else:
+            rep.bad(f"离线包校验漏判：非MZ={ok2} 过小={ok3} sha={ok4}")
+        shutil.rmtree(d, ignore_errors=True)
+    except Exception as e:  # noqa: BLE001
+        rep.bad(f"离线包校验抛异常: {e!r}")
+
+
 def _check_network(rep: Report, objectids: list[str], timeout: int = 60):
     """② 联网 + 写盘：HTTPS 走系统证书库，冻结后不一定还灵，必须实测。"""
     import cx_download as core  # noqa: PLC0415
@@ -197,6 +284,7 @@ def run(objectids: list[str] | None = None, network: bool = True,
 
     _check_bundle(rep)
     _check_parser(rep)
+    _check_update_logic(rep)
     if network:
         _check_network(rep, oids)
     else:

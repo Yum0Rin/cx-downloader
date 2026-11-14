@@ -79,12 +79,14 @@ import hashlib
 import html as _html
 import json
 import os
+import queue
 import re
 import shutil
 import socket
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -96,7 +98,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
-__version__ = "1.4.4"
+__version__ = "1.4.5"
 GITHUB_REPO = "Yum0Rin/cx-downloader"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"
@@ -1568,11 +1570,11 @@ def describe_object(cookie: str | None, oid: str, timeout: int = 60) -> dict:
 
 
 def system_proxy() -> str:
-    """系统代理地址（目前只读 Windows 的「Internet 选项」代理设置），没有就返回 ""。
+    """读取已经存在的 Windows「Internet 选项」代理设置，没有就返回 ""。
 
-    一键更新要连 GitHub 资产 CDN，国内很多人开着 Clash / v2ray 的「系统代理」。
-    urllib 默认只认 `http_proxy` / `https_proxy` 环境变量，读不到这里的设置，
-    所以下载更新包前先问一句系统代理，省得用户以为工具坏了。
+    只读取、不启动也不修改任何代理。urllib 默认只认 `http_proxy` /
+    `https_proxy` 环境变量，读不到这里的设置，所以下载前顺带问一句。
+    校园网这类不能开代理的环境保持留空即可，兜底走境内更新源 / 本地 exe。
     """
     if not sys.platform.startswith("win"):
         return ""
@@ -1605,91 +1607,182 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in nums[:3]) or (0,)
 
 
-def check_update(current: str | None = None, timeout: int = 12) -> dict | None:
-    """查 GitHub 最新 Release，比当前版本新就返回信息，否则返回 None。
-
-    API 被墙 / 502 / 限流时，回退到 Release 页的 /latest 跳转，尽量别让更新检查失效。
-    """
-    data = None
-    for _ in range(2):
-        try:
-            req = urllib.request.Request(
-                f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
-                headers={"User-Agent": UA,
-                         "Accept": "application/vnd.github+json"},
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.load(resp)
-            break
-        except Exception:  # noqa: BLE001
-            data = None
-            time.sleep(1)
-
-    if data:
-        tag = str(data.get("tag_name") or "").strip()
-        latest = tag[1:] if tag[:1] in ("v", "V") else tag
-        if not latest or parse_version(latest) <= parse_version(current or __version__):
-            return None
-        info = {
-            "version": latest,
-            "tag": tag,
-            "name": data.get("name") or tag,
-            "body": data.get("body") or "",
-            "url": data.get("html_url") or RELEASES_URL,
-            "published_at": data.get("published_at") or "",
-        }
-        # Windows 一键自更新要用 Release 里的 exe 资产（macOS/Linux 没有 .exe）
-        win = next((a for a in (data.get("assets") or [])
-                    if str(a.get("name") or "").lower().endswith(".exe")), None)
-        if win:
-            info["asset_url"] = win.get("browser_download_url") or ""
-            info["asset_size"] = int(win.get("size") or 0)
-            info["asset_name"] = win.get("name") or ""
-            # GitHub 现在给资产带 sha256 摘要（形如 "sha256:abc..."），有就拿来校验
-            info["asset_digest"] = str(win.get("digest") or "")
-        return info
-
-    return _check_update_html(current, timeout)
+# 境内更新清单（latest.json）协议 —— 给「境外不通、又不能开代理」的网络用。
+# 托管在任意境内可达的静态地址即可，程序只发 GET，不需要服务端脚本、不需要代理。
+# {
+#   "version": "1.4.5", "tag": "v1.4.5", "name": "v1.4.5",
+#   "body": "更新说明", "url": "https://.../releases", "published_at": "2026-11-14",
+#   "assets": [{"name": "cx-downloader-v1.4.5-windows.exe",
+#               "url": "https://.../xx.exe", "size": 15575745, "sha256": "..."}]
+# }
+# assets 里也可以直接写 URL 字符串。清单要和 GitHub Release 同步，否则会停在旧版本。
 
 
-def _check_update_html(current: str | None = None,
-                       timeout: int = 12) -> dict | None:
-    """API 不可用时，用 github.com/<repo>/releases/latest 的 302 目标兜底。"""
-    for _ in range(2):
-        try:
-            req = urllib.request.Request(
-                f"https://github.com/{GITHUB_REPO}/releases/latest",
-                headers={"User-Agent": UA},
-            )
-            with urllib.request.urlopen(req, timeout=max(10, timeout)) as resp:
-                final = resp.geturl() or ""
-            break
-        except Exception:  # noqa: BLE001
-            final = ""
-            time.sleep(1)
-    if not final:
+def parse_mirror_urls(text: str) -> list[str]:
+    """设置里「境内更新源」的多行文本 → URL 列表（去注释、去重、只留 http/https）。"""
+    out: list[str] = []
+    for line in (text or "").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line.startswith(("http://", "https://")) and line not in out:
+            out.append(line)
+    return out
+
+
+def _release_info(data: dict, current: str, source: str) -> dict | None:
+    """GitHub Release JSON / 境内清单 → 统一的 info；不是新版本或格式不对返回 None。"""
+    if not isinstance(data, dict):
         return None
+    tag = str(data.get("tag_name") or data.get("tag") or "").strip()
+    ver = str(data.get("version") or "").strip()
+    if not ver and tag:
+        ver = tag[1:] if tag[:1] in ("v", "V") else tag
+    if not tag:
+        tag = "v" + ver
+    if not ver or parse_version(ver) <= parse_version(current):
+        return None
+    info = {
+        "version": ver,
+        "tag": tag,
+        "name": data.get("name") or tag,
+        "body": data.get("body") or "",
+        "url": data.get("html_url") or data.get("url") or RELEASES_URL,
+        "published_at": data.get("published_at") or "",
+        "source": source,
+    }
+    urls: list[str] = []
+    first: dict = {}
+    for a in data.get("assets") or []:
+        if isinstance(a, dict):
+            u = str(a.get("browser_download_url") or a.get("url") or "").strip()
+            if not u:
+                continue
+            n = str(a.get("name") or "").strip()
+            if n and not n.lower().endswith(".exe"):
+                continue
+            if not first:
+                first = a
+            urls.append(u)
+        elif isinstance(a, str) and a.strip():
+            urls.append(a.strip())
+    if urls:
+        info["asset_urls"] = urls
+        info["asset_url"] = urls[0]
+        info["asset_size"] = int(first.get("size") or 0)
+        info["asset_name"] = str(first.get("name") or "") or os.path.basename(urls[0])
+        # GitHub 用 "sha256:xxx"，清单里通常直接给 hex，统一成前一种格式
+        digest = str(first.get("digest") or first.get("sha256") or "").strip()
+        info["asset_digest"] = (digest if digest.startswith("sha256:")
+                                else "sha256:" + digest if digest else "")
+    return info
+
+
+def _html_release_info(final: str, current: str) -> dict | None:
+    """github.com/.../releases/latest 的 302 目标 → info（拿不到资产详情）。"""
     try:
         tag = final.rstrip("/").rsplit("/", 1)[-1]
-        latest = tag[1:] if tag[:1] in ("v", "V") else tag
-        if not latest or parse_version(latest) <= parse_version(current or __version__):
+        ver = tag[1:] if tag[:1] in ("v", "V") else tag
+        if not ver or parse_version(ver) <= parse_version(current):
             return None
         asset = f"cx-downloader-{tag}-windows.exe"
+        url = (f"https://github.com/{GITHUB_REPO}/releases/download/"
+               f"{tag}/{asset}")
         return {
-            "version": latest,
+            "version": ver,
             "tag": tag,
             "name": tag,
-            "body": ("（GitHub API 暂不可用，已从 Release 页获取到新版本；"
+            "body": ("（GitHub API 和境内更新清单都不可用，只从 Release 页拿到版本号；"
                      "详细说明请点「浏览器下载」。）"),
             "url": final,
             "published_at": "",
-            "asset_url": (f"https://github.com/{GITHUB_REPO}/releases/download/"
-                          f"{tag}/{asset}"),
+            "source": "GitHub Release 页",
+            "asset_urls": [url],
+            "asset_url": url,
             "asset_size": 0,
             "asset_name": asset,
+            "asset_digest": "",
         }
     except Exception:  # noqa: BLE001
         return None
+
+
+def _fetch_release(kind: str, url: str, current: str,
+                    timeout: int) -> dict | None:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": UA,
+                     "Accept": "application/json, text/plain, */*"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if kind == "html":
+            return _html_release_info(resp.geturl() or "", current)
+        label = "境内更新清单" if kind == "manifest" else "GitHub API"
+        return _release_info(json.load(resp), current, label)
+
+
+def check_update(current: str | None = None, timeout: int = 8,
+                 mirrors: list[str] | None = None) -> dict | None:
+    """多源并行竞速查更新，谁先给出有效结果用谁。
+
+    源 = 用户配置的境内清单 URL（可多个）+ GitHub API + Release 页 302。
+    境内清单放在最前面：校园网这类「境外不通、又不能开代理」的环境里，
+    它会先返回，挂掉的 GitHub 不会再让用户干等二十多秒。
+    慢源都是 daemon 线程，拿到结果后主线程直接返回，不拖程序退出。
+    """
+    cur = current or __version__
+    tasks: list[tuple[str, str]] = []
+    for u in parse_mirror_urls("\n".join(mirrors or [])):
+        tasks.append(("manifest", u))
+    tasks.append(("api", f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"))
+    tasks.append(("html", f"https://github.com/{GITHUB_REPO}/releases/latest"))
+
+    results: queue.Queue[tuple[str, dict | None]] = queue.Queue()
+
+    def worker(kind: str, url: str) -> None:
+        try:
+            info = _fetch_release(kind, url, cur, timeout)
+            results.put(("ok" if info else "none", info))
+        except Exception:  # noqa: BLE001
+            results.put(("err", None))
+
+    for kind, url in tasks:
+        threading.Thread(target=worker, args=(kind, url), daemon=True).start()
+
+    deadline = time.time() + timeout + 2
+    seen = 0
+    while seen < len(tasks) and time.time() < deadline:
+        try:
+            status, info = results.get(timeout=0.25)
+        except queue.Empty:
+            continue
+        seen += 1
+        if status == "ok":
+            return info
+    return None
+
+
+def check_exe_package(path: str, expect_sha256: str = "") -> tuple[bool, str]:
+    """校验下载 / 手动导入的更新包是不是一个完整的 Windows exe。"""
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return False, f"读不到文件：{e}"
+    if size < 1024 * 1024:
+        return False, f"文件只有 {human(size)}，不像完整的 exe"
+    try:
+        with open(path, "rb") as f:
+            if f.read(2) != b"MZ":
+                return False, "文件不是有效的 Windows exe（开头不是 MZ）"
+        if expect_sha256:
+            want = expect_sha256.lower()
+            if want.startswith("sha256:"):
+                want = want.split(":", 1)[1]
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            if h.hexdigest() != want:
+                return False, "sha256 与发布信息不一致"
+    except OSError as e:
+        return False, f"校验时读文件失败：{e}"
+    return True, ""
 
 
 # ------------------------------------------------------------ 课程「资料」页

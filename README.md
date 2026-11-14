@@ -141,8 +141,10 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 
 ## 更新与升级
 
-启动 1.5 秒后自动查一次 GitHub 最新 Release，有新版就弹窗（也可以在
-「设置 → 关于 → 检查更新」手动查）。
+启动 1.5 秒后自动查一次更新，有新版就弹窗（也可以在
+「设置 → 关于 → 检查更新」手动查）。版本信息来自多个源并行竞速：
+用户配置的境内更新清单、GitHub API、GitHub Release 页跳转，谁先返回用谁，
+所以某个源挂掉不会再让用户干等。
 
 **Windows 打包版可以一键更新：**
 
@@ -159,8 +161,46 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 **macOS / Linux / 源码运行**：弹窗里只有「下载新版本」，浏览器下载后自行替换；
 配置文件 `~/.cx_download_gui.json` 不受影响。
 
-**下载 GitHub 太慢**：在「设置 → 关于 → 更新下载代理」填本地代理地址，例如
-`http://127.0.0.1:7897`（Clash / v2ray 的 HTTP 端口）。留空时会自动使用系统代理。
+**境外访问不稳定 / 部分 GitHub 域名卡住、又不能开代理**：不需要开任何代理，两条兜底路径：
+
+1. **境内更新源**：在「设置 → 关于 → 境内更新源」里每行填一个 `latest.json` 地址
+   （`#` 后面可写注释），检查更新和下载都会优先走它。清单格式见下方「更新清单协议」。
+2. **从本地文件更新**：完全连不上时，在能上网的设备上下载好新 exe，
+   用「设置 → 关于 → 从本地文件更新…」选中它，校验通过后自动替换并重启。
+
+下载 exe 时如果有多个地址（清单里可以给多个 `assets`），会按顺序逐个尝试，
+换源前清掉上一个源的残包；同一次下载里的断点续传照旧有效。
+
+<details>
+<summary>更新清单协议（latest.json）</summary>
+
+放在任意境内可达的静态托管上即可，程序只发 GET，不需要服务端脚本、不需要代理。
+发布新版本时把它和 GitHub Release 一起更新，否则会停在旧版本。
+
+```json
+{
+  "version": "1.4.5",
+  "tag": "v1.4.5",
+  "name": "v1.4.5",
+  "body": "这一版的更新说明（纯文本或 Markdown）",
+  "url": "https://example.com/releases",
+  "published_at": "2026-11-14",
+  "assets": [
+    {
+      "name": "cx-downloader-v1.4.5-windows.exe",
+      "url": "https://example.com/cx-downloader-v1.4.5-windows.exe",
+      "size": 15575745,
+      "sha256": "这里填 exe 的 sha256 十六进制"
+    }
+  ]
+}
+```
+
+- `assets` 里也可以直接写 URL 字符串（此时没有大小和摘要，只校验 PE 头）。
+- 多个 `assets` = 多个下载地址，会逐个回退。
+- `sha256` 写不写都行；写了就按它校验，比只看大小更可靠。
+
+</details>
 
 **提醒的两种关闭方式**：「稍后再说」只是关掉这次，下次启动还会提醒；
 「不再提示此版本」只忽略当前版本，下个版本仍会弹。

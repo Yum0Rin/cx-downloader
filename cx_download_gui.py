@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import ctypes
-import hashlib
 import json
 import os
 import queue
@@ -59,7 +58,8 @@ class UpdatePaused(RuntimeError):
 
 def download_update_package(asset: str, tmp: str, total: int = 0,
                             proxy: str = "", progress=None,
-                            budget: float = 300.0) -> int:
+                            budget: float = 300.0,
+                            conn_timeout: int = 20) -> int:
     """把更新包下到 tmp，支持断点续传，返回最终字节数。
 
     - `%TEMP%` 里同版本的残包直接复用，带 `Range: bytes=<done>-` 接着下；
@@ -67,6 +67,7 @@ def download_update_package(asset: str, tmp: str, total: int = 0,
     - 416 视为「已经下到末尾」；
     - 单次尝试超过 `budget` 秒抛 UpdatePaused，**残包保留**，下次点「一键更新」接着下；
     - 两次尝试都失败抛 RuntimeError，残包同样保留。
+    - `conn_timeout` 是单次 socket 读超时，换源时会调小，避免挂死的源拖住整个更新。
     """
     if proxy and "://" not in proxy:
         proxy = "http://" + proxy
@@ -87,7 +88,7 @@ def download_update_package(asset: str, tmp: str, total: int = 0,
         try:
             req = urllib.request.Request(asset, headers=headers)
             started = time.time()
-            with opener.open(req, timeout=120) as r:
+            with opener.open(req, timeout=conn_timeout) as r:
                 # 服务端忽略 Range（回 200）→ 只能从头写
                 if done and getattr(r, "status", 200) == 200:
                     done = 0
@@ -102,7 +103,7 @@ def download_update_package(asset: str, tmp: str, total: int = 0,
                             progress(done, total)
                         if time.time() - started > budget:
                             raise UpdatePaused(
-                                "这次下载超过 5 分钟已暂停（已下 "
+                                f"这次下载超过 {budget / 60:.0f} 分钟已暂停（已下 "
                                 f"{core.human(done)}"
                                 f"{' / ' + core.human(total) if total else ''}）。"
                                 "残包已保留，再点一次「一键更新」会从断点接着下；"
@@ -442,6 +443,11 @@ def save_settings(d: dict) -> None:
             json.dump(d, f, ensure_ascii=False, indent=2)
     except Exception:  # noqa: BLE001
         pass
+
+
+def saved_mirrors() -> list[str]:
+    """启动时的自动检查要用已保存的境内更新源。"""
+    return core.parse_mirror_urls(str(load_settings().get("update_mirrors") or ""))
 
 
 def est_width(text: str, font: ctk.CTkFont) -> int:
@@ -1208,7 +1214,7 @@ class App(ctk.CTk):
         self.auto_skip = ctk.BooleanVar(value=bool(cfg.get("auto_skip", True)))
         self.scan_cache = ctk.BooleanVar(value=bool(cfg.get("scan_cache", True)))
         self.cookie = ctk.StringVar(value=cfg.get("cookie") or "")
-        # 可选：GitHub Release 资产下载代理，例如 http://127.0.0.1:7897
+        # 可选：已存在的下载代理设置（一般留空；校园网请走境内更新源 / 本地 exe）
         self.upd_proxy = ctk.StringVar(value=cfg.get("update_proxy") or "")
         self.appearance = ctk.StringVar(value=cfg.get("appearance") or "跟随系统")
         # 目录层级：勾中的才会真的建目录。默认只建「课程名」一级，跟老行为一致。
@@ -1602,27 +1608,44 @@ class App(ctk.CTk):
             self._btn(row_links, "请作者喝杯奶茶", self._show_support,
                       width=124).pack(side="left", padx=(8, 0))
 
-        # 一键更新走 GitHub 资产 CDN，国内可能需要走代理
+        # 校园网这类「境外不通、也不能开代理」的环境，靠境内清单 / 本地 exe 兜底
+        ctk.CTkLabel(
+            wrap, text="境内更新源（每行一个 latest.json 地址，# 后为注释）",
+            anchor="w", font=ctk.CTkFont(FONT, 12), text_color=pair("text"),
+        ).pack(fill="x", padx=16, pady=(10, 0))
+        box_mirrors = ctk.CTkTextbox(
+            wrap, height=62, corner_radius=8, border_width=1,
+            border_color=pair("input_border"), fg_color=pair("input"),
+            text_color=pair("text"), font=ctk.CTkFont(FONT, 11),
+        )
+        box_mirrors.pack(fill="x", padx=16, pady=(4, 0))
+        box_mirrors.insert("1.0", str(load_settings().get("update_mirrors") or ""))
+        ctk.CTkLabel(
+            wrap, text="境外不通时填一个境内可达的更新清单地址，检查更新和下载都会优先走它；"
+                       "完全不通就直接用下面的「从本地文件更新」。不需要开任何代理。",
+            anchor="w", justify="left", wraplength=520,
+            font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
+        ).pack(fill="x", padx=16, pady=(2, 0))
+
+        row_offline = ctk.CTkFrame(wrap, fg_color="transparent")
+        row_offline.pack(fill="x", padx=16, pady=(8, 0))
+        self._btn(row_offline, "从本地文件更新…", self._import_local_exe,
+                  width=140).pack(side="left")
+
         row_proxy = ctk.CTkFrame(wrap, fg_color="transparent")
         row_proxy.pack(fill="x", padx=16, pady=(8, 0))
         ctk.CTkLabel(
-            row_proxy, text="更新下载代理", anchor="w",
+            row_proxy, text="更新下载代理（一般留空）", anchor="w",
             font=ctk.CTkFont(FONT, 12), text_color=pair("muted"),
         ).pack(side="left")
         ctk.CTkEntry(
             row_proxy, textvariable=self.upd_proxy, height=30,
             corner_radius=8, border_width=1, border_color=pair("input_border"),
             fg_color=pair("input"), text_color=pair("text"),
-            placeholder_text="可选，如 http://127.0.0.1:7897",
+            placeholder_text="留空即可",
             placeholder_text_color=pair("muted"),
             font=ctk.CTkFont(FONT, 11),
         ).pack(side="left", fill="x", expand=True, padx=(8, 0))
-        ctk.CTkLabel(
-            wrap, text="国内下载 GitHub 慢或下不动时填本地代理（如 Clash 的 "
-                       "127.0.0.1:7897）；留空会自动使用系统代理。",
-            anchor="w", justify="left", wraplength=520,
-            font=ctk.CTkFont(FONT, 11), text_color=pair("muted"),
-        ).pack(fill="x", padx=16, pady=(2, 0))
 
         # 交流 / 反馈：一行字 + 一键复制群号
         row_qq = ctk.CTkFrame(wrap, fg_color="transparent")
@@ -1639,10 +1662,12 @@ class App(ctk.CTk):
             btn_check.configure(state="disabled", text="检查中…")
             lbl_status.configure(text="", text_color=pair("muted"))
             state["done"], state["info"] = False, None
+            # Tk 控件只能在主线程读，先把文本取好再交给工作线程
+            mirrors = core.parse_mirror_urls(box_mirrors.get("1.0", "end"))
 
             def work():
                 try:
-                    state["info"] = core.check_update()
+                    state["info"] = core.check_update(mirrors=mirrors)
                 except Exception:  # noqa: BLE001
                     state["info"] = None
                 state["done"] = True
@@ -1682,6 +1707,7 @@ class App(ctk.CTk):
             d["appearance"] = self.appearance.get()
             d["scan_cache"] = bool(self.scan_cache.get())
             d["update_proxy"] = self.upd_proxy.get().strip()
+            d["update_mirrors"] = box_mirrors.get("1.0", "end").strip()
             save_settings(d)
             self.accent = self._accent_pick
             if restart:
@@ -1717,9 +1743,11 @@ class App(ctk.CTk):
         os.execv(sys.executable, args)
 
     def _check_update_async(self):
+        mirrors = saved_mirrors()
+
         def work():
             try:
-                info = core.check_update()
+                info = core.check_update(mirrors=mirrors)
             except Exception:  # noqa: BLE001
                 info = None
             self.q.put(("update", info))
@@ -1836,6 +1864,8 @@ class App(ctk.CTk):
         if can_auto:
             hint = (
                 f"一键更新：下载 v{info['version']} 的 Windows exe，退出后自动覆盖并重启。\n"
+                f"本次版本信息来源：{info.get('source') or 'GitHub'}"
+                f"（共 {len(info.get('asset_urls') or [])} 个下载地址，会逐个尝试）。\n"
                 "设置、登录态、下载队列都会保留，不用重新配置。\n"
                 "装在 Program Files 等目录需要管理员权限，否则会提示替换失败；"
                 "失败时新版本会留在临时目录，按提示手动复制即可。\n"
@@ -1876,52 +1906,59 @@ class App(ctk.CTk):
             pass
 
         def work():
-            try:
-                tmp = os.path.join(
-                    tempfile.gettempdir(),
-                    f"cx-downloader-{info['version']}-new.exe")
-                total = int(info.get("asset_size") or 0)
-                proxy = (load_settings().get("update_proxy") or "").strip()
-                if not proxy:
-                    # 没手填就用系统代理（Clash / v2ray 的「系统代理」开关），
-                    # urllib 默认只读环境变量，读不到 Windows 这份设置
-                    proxy = core.system_proxy()
-                # 已有残包时先把进度亮出来，让用户知道这次是接着下
-                if os.path.exists(tmp):
-                    self.q.put(("update_progress",
-                                (os.path.getsize(tmp), total)))
-                size = download_update_package(
-                    asset, tmp, total, proxy,
-                    progress=lambda got, tot: self.q.put(
-                        ("update_progress", (got, tot))))
-                if total and size != total:
-                    raise RuntimeError(
-                        f"下载大小不符：{size}/{total}（再点一次会接着下）")
-                digest = str(info.get("asset_digest") or "")
-                if digest.startswith("sha256:"):
-                    want = digest.split(":", 1)[1].strip().lower()
-                    h = hashlib.sha256()
-                    with open(tmp, "rb") as f:
-                        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                            h.update(chunk)
-                    if h.hexdigest() != want:
-                        try:
-                            os.remove(tmp)   # 内容对不上，留着只会反复失败
-                        except OSError:
-                            pass
+            urls = list(info.get("asset_urls") or [])
+            if not urls:
+                urls = [asset]
+            proxy = (load_settings().get("update_proxy") or "").strip()
+            if not proxy:
+                proxy = core.system_proxy()
+            tmp = os.path.join(
+                tempfile.gettempdir(),
+                f"cx-downloader-{info['version']}-new.exe")
+            total = int(info.get("asset_size") or 0)
+            digest = str(info.get("asset_digest") or "")
+            last = "没有可用的下载地址"
+            for idx, url in enumerate(urls, 1):
+                if len(urls) > 1:
+                    self.q.put(("update_stage",
+                                f"正在尝试下载源 {idx}/{len(urls)}"
+                                f"（{info.get('source') or '更新源'}）"))
+                # 换源前清掉上一个源留下的残包：不同源的错误页/截断内容不能混着续传。
+                # 同一次下载内的断点续传仍由 download_update_package 负责。
+                if idx > 1 and os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                try:
+                    # 已有残包时先把进度亮出来，让用户知道这次是接着下
+                    if idx == 1 and os.path.exists(tmp):
+                        self.q.put(("update_progress",
+                                    (os.path.getsize(tmp), total)))
+                    size = download_update_package(
+                        url, tmp, total, proxy,
+                        progress=lambda got, tot: self.q.put(
+                            ("update_progress", (got, tot))),
+                        budget=120, conn_timeout=15)
+                    if total and size != total:
                         raise RuntimeError(
-                            "更新包校验不通过（sha256 与 Release 不一致），"
-                            "已删除；请重试，或用「浏览器下载」手动更新")
-                with open(tmp, "rb") as f:
-                    if f.read(2) != b"MZ":
+                            f"下载大小不符：{size}/{total}（再点一次会接着下）")
+                    ok, why = core.check_exe_package(tmp, digest)
+                    if not ok:
                         try:
-                            os.remove(tmp)      # 内容不对，留着续传没意义
+                            os.remove(tmp)   # 内容不对，留着续传没意义
                         except OSError:
                             pass
-                        raise RuntimeError("下载的文件不是有效的 Windows exe")
-                self.q.put(("update_ready", (tmp, info)))
-            except Exception as e:  # noqa: BLE001
-                self.q.put(("update_failed", str(e)))
+                        raise RuntimeError(why)
+                    self.q.put(("update_ready", (tmp, info)))
+                    return
+                except UpdatePaused as e:
+                    # 真的在下、只是慢：残包留着给下次续传，别换源把它清掉
+                    self.q.put(("update_failed", str(e)))
+                    return
+                except Exception as e:  # noqa: BLE001
+                    last = str(e)
+            self.q.put(("update_failed", last))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2002,6 +2039,9 @@ class App(ctk.CTk):
 
         state = lines[0].lower() if lines else ""
         ver = lines[1] if len(lines) > 1 else ""
+        if ver == "local" and state == "ok":
+            self.log("已从本地 exe 完成替换（手动导入，无版本号可比对）。", "head")
+            return
         new_exe = (os.path.join(tempfile.gettempdir(),
                                 f"cx-downloader-{ver}-new.exe") if ver else "")
         # 批处理说成功，还要当前真的跑着新版本才算数
@@ -2044,7 +2084,37 @@ class App(ctk.CTk):
                 pass
         messagebox.showwarning(
             "更新失败",
-            f"{msg}\n\n可以点「下载新版本」手动更新。")
+            f"{msg}\n\n"
+            "境外下载不通时：在「设置 → 关于」里填境内更新源，"
+            "或用「从本地文件更新」直接选下载好的 exe；"
+            "也可以点「下载新版本」手动更新。")
+
+    def _import_local_exe(self):
+        """境外完全不通时，用别处下载好的 exe 走同一套「退出→覆盖→重启」。"""
+        if not (sys.platform.startswith("win") and getattr(sys, "frozen", False)):
+            messagebox.showinfo(
+                "从本地文件更新",
+                "源码运行时直接替换 cx_download_gui.py / cx_download.py 即可，"
+                "不需要走自动替换。")
+            return
+        path = filedialog.askopenfilename(
+            parent=getattr(self, "_settings_dlg", None),
+            title="选择下载好的新版本 exe",
+            filetypes=[("Windows 可执行文件", "*.exe"), ("所有文件", "*.*")])
+        if not path:
+            return
+        ok, why = core.check_exe_package(path)
+        if not ok:
+            messagebox.showwarning("这个文件不能用", why)
+            return
+        if not messagebox.askyesno(
+                "确认替换",
+                f"即将用：\n{path}\n\n覆盖当前程序并重启。\n"
+                "设置和下载队列会保留。确认继续？"):
+            return
+        # 离线包没有 Release 信息；ver 要写进状态文件，必须是纯 ASCII
+        self._apply_update(path, {"version": "local", "url": "",
+                                   "source": "本地文件"})
 
     def _build_input(self, parent):
         card = Card(parent, "① 链接输入（预览页 / objectid / 课程页）")
@@ -3677,6 +3747,14 @@ class App(ctk.CTk):
                             else:
                                 self._upd_lbl.configure(
                                     text=f"下载中… {core.human(got)}")
+                        except Exception:  # noqa: BLE001
+                            pass
+                elif kind == "update_stage":
+                    dlg = getattr(self, "_upd_dlg", None)
+                    if dlg and dlg.winfo_exists():
+                        try:
+                            self._upd_lbl.configure(text=payload,
+                                                    text_color=pair("muted"))
                         except Exception:  # noqa: BLE001
                             pass
                 elif kind == "update_ready":
