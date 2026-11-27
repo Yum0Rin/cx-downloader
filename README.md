@@ -50,6 +50,10 @@
 | macOS | `cx-downloader-<版本>-macos` | 单文件可执行程序（不是 `.app`），按下面步骤在终端运行 |
 | Linux | `cx-downloader-<版本>-linux` | `chmod +x` 后运行；系统需有 `libtk8.6` / `libtcl8.6` |
 
+**GitHub 打不开或下载很慢**：Windows 版在 Gitee 上有镜像，直接到
+<https://gitee.com/yum0rin/cx-downloader-update/releases> 下载同名 exe；
+macOS / Linux 版目前只在 GitHub Release，需要翻到 GitHub 取。
+
 #### macOS 完整安装步骤（照着敲就行）
 
 下载下来的是一个**没有扩展名的可执行文件**，macOS 不允许直接双击，需要从「终端」启动。
@@ -181,14 +185,14 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 5. **点「扫描」**：章节任务点 + 资料页一次列出（按来源分组，可折叠）。
 6. **想一次查完整个账号**：点「扫描全部课程」，会列出账号全部课程
    （标进行中 / 未开始 / 已结束，按开课时间排序），勾选后逐门检查，
-   结果显示**已有 / 有更新 / 缺失**；视频 / 安装包 / 压缩包 / 大文件
+   结果显示**已有 / 有更新 / 未下载**；视频 / 安装包 / 压缩包 / 大文件
    单独成组、默认不勾，检查完弹窗问是否一起下载。
 7. **勾选后点「开始下载」**：看进度条和日志，可随时停止；失败项可一键重试。
 
 > **「扫描」和「扫描全部课程」有什么区别**：
 > 「扫描」检查**输入框里粘的**课程链接；「扫描全部课程」自动列出**账号所有课程**，
 > 让你勾选后批量检查。两者都会按课程名找到本地课程文件夹、递归比对（不管子目录层级），
-> 结果分「已有 / 有更新 / 缺失」。整学期盘一遍用「扫描全部课程」。
+> 结果分「已有 / 有更新 / 未下载」。整学期盘一遍用「扫描全部课程」。
 
 > 扫描有 10 分钟缓存；同一门课 2 分钟内再点一次「扫描」会强制刷新。
 
@@ -216,12 +220,30 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 **macOS / Linux / 源码运行**：弹窗里只有「下载新版本」，浏览器下载后自行替换；
 配置文件 `~/.cx_download_gui.json` 不受影响。
 
-**境外访问不稳定 / 部分 GitHub 域名卡住时**，两条兜底路径：
+### 用 Gitee 镜像更新（境外不通 / 下载卡住时用这个，最简单）
 
-1. **境内更新源**：在「设置 → 关于 → 境内更新源」里每行填一个 `latest.json` 地址
-   （`#` 后面可写注释），检查更新和下载都会优先走它。清单格式见下方「更新清单协议」。
-2. **从本地文件更新**：完全连不上时，在能上网的设备上下载好新 exe，
-   用「设置 → 关于 → 从本地文件更新…」选中它，校验通过后自动替换并重启。
+本项目在 Gitee 上备了一份**现成的境内更新源**，你只需要填一次地址：
+
+1. 打开「**设置 → 关于**」，在「境内更新源」框里粘贴这一行：
+
+   ```
+   https://gitee.com/yum0rin/cx-downloader-update/raw/master/latest.json
+   ```
+
+2. 保存设置，点「**检查更新**」——新版本信息会从 Gitee 读，比走 GitHub 快且稳。
+3. 弹窗里点「**一键更新**」。exe 同样优先从 **Gitee Release 附件**下载（境内直连），
+   下完校验大小和 sha256 后自动替换、重启，**设置、登录态、下载队列都保留**。
+
+之后每次有新版都不用再管，自动提醒 + 一键更新走的就是这个境内源。
+
+> 弹窗里的「**浏览器下载**」打开的是 Release 页（GitHub）。如果 GitHub 打不开，
+> 直接去上面的 Gitee 镜像仓库另存新 exe，再用「设置 → 关于 → 从本地文件更新…」
+> 选中它，同样会校验后自动替换。
+
+macOS / Linux 用户这个源只帮你拿到版本说明和下载地址，仍需浏览器下载后自行替换文件。
+
+**完全连不上 GitHub 也连不上 Gitee 时**：在能上网的设备上下载好新 exe，
+用「设置 → 关于 → 从本地文件更新…」选中它，校验通过后自动替换并重启。
 
 下载 exe 时如果有多个地址（清单里可以给多个 `assets`），会按顺序逐个尝试，
 换源前清掉上一个源的残包；同一次下载里的断点续传照旧有效。
@@ -257,36 +279,31 @@ install -Dm644 packaging/cx-downloader.desktop ~/.local/share/applications/cx-do
 
 </details>
 
-**用 Gitee 托管清单（校园网等境外不稳定的环境）**
+<details>
+<summary>自建 Gitee 镜像源（维护者向，普通用户不用看）</summary>
 
-本项目实际使用的境内源：`https://gitee.com/yum0rin/cx-downloader-update/raw/master/latest.json`
-（公开仓库，发新版后用下面的脚本重新生成 `latest.json` 并同步过去即可）。
-exe 镜像挂在同一仓库的 Release 附件：`https://gitee.com/yum0rin/cx-downloader-update/releases/download/{tag}/`，
-生成清单时把这个地址传给 `--asset-base`。
+本项目已在 Gitee 维护好一个公开镜像仓库，用户按上面填那一行地址即可，无需自建；
+只有自己托管时才需要下面的步骤。
 
-1. 在 Gitee 建一个**公开**仓库，把 `packaging/latest.json` 放进去。清单用下面的脚本生成/更新：
+```powershell
+# 1. 从 GitHub Release 生成清单，--asset-base 指向你的 Gitee Release 附件目录
+python packaging/make_update_manifest.py `
+  --tag v1.4.8 `
+  --asset-base "https://gitee.com/<owner>/<repo>/releases/download/{tag}"
+```
 
-   ```powershell
-   python packaging/make_update_manifest.py                        # 从 GitHub API 拉最新 Release
-   python packaging/make_update_manifest.py --release-json r.json  # 离线 / CI，r.json 是同格式 Release JSON
-   ```
+```bash
+# 2. 把 packaging/latest.json 推到 Gitee 仓库，再建同名 tag + Release，
+#    上传 exe 作为附件（Windows 产物名必须是 cx-downloader-<tag>-windows.exe）
+```
 
-2. raw 地址格式：`https://gitee.com/<owner>/<repo>/raw/<branch>/latest.json`
-   （实测会 302 到 `raw.giteeusercontent.com`，程序会自动跟随，校园网 0.66s 可达）。
-   把这个地址填进「设置 → 关于 → 境内更新源」即可。
-   只托管清单、不镜像 exe 也有效：版本检查走境内，下载仍可退回 GitHub 或改用「从本地文件更新」。
+- **15MB 的 exe 不能放仓库 raw**：Gitee 对公开仓库大于 10MB 的原始数据要求登录（403），
+  必须走 Release 附件。
+- `--asset-base` 会让清单输出同一 exe 的两个地址（Gitee 在前、GitHub 在后），下载器按顺序回退。
+- Gitee raw 有 60~300 秒缓存：同步后别立刻验证，或换个文件名绕开。
+- 清单同步完记得把 `packaging/latest.json` 一起提交回主仓库。
 
-3. **15MB 的 exe 不能放仓库 raw**：Gitee 对公开仓库大于 10MB 的原始数据要求登录（返回 403）。
-   要境内下载就把 exe 放 **Gitee Release 附件**，生成清单时加
-
-   ```powershell
-   python packaging/make_update_manifest.py `
-     --asset-base "https://gitee.com/<owner>/<repo>/releases/download/{tag}"
-   ```
-
-   清单里会输出同一 exe 的两个下载地址（境内附件在前、GitHub 在后），下载器按顺序逐个回退。
-
-4. Gitee raw 有 60~300 秒缓存：发新版后别立刻检查，或换个文件名绕开缓存。
+</details>
 
 **提醒的两种关闭方式**：「稍后再说」只是关掉这次，下次启动还会提醒；
 「不再提示此版本」只忽略当前版本，下个版本仍会弹。
@@ -336,7 +353,7 @@ python cx_download.py <课程链接> --no-data
 # 只检查本地（不下载）：按课程名找本地目录，递归比对
 python cx_download.py <课程链接> --check-local --local-root "D:\课程"
 
-# 检查后只补缺失的普通文件（视频/安装包/压缩包/大文件默认不下）
+# 检查后只补未下载的普通文件（视频/安装包/压缩包/大文件默认不下）
 python cx_download.py <课程链接> --check-local --download-missing
 ```
 
@@ -347,7 +364,7 @@ python cx_download.py <课程链接> --check-local --download-missing
 | `-o, --out DIR` | 保存目录（默认 `./cx_download`） |
 | `--check-local` | 只检查本地，不下载 |
 | `--local-root DIR` | 本地课程根目录（默认同 `--out`） |
-| `--download-missing` | 配合 `--check-local`：只补缺失的普通文件 |
+| `--download-missing` | 配合 `--check-local`：只补未下载的普通文件 |
 | `--include-special` | 特殊/大文件（视频/安装包/压缩包/大文件）也一起下 |
 | `--large-mb N` | 大文件阈值（默认 100 MB） |
 | `--report-json FILE` | 检查结果写 JSON |
