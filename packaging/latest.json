@@ -1,22 +1,22 @@
 {
-  "version": "1.4.7",
-  "tag": "v1.4.7",
-  "name": "v1.4.7",
-  "body": "### 变更\n\n- **移除更新链路里用不到的网络设置**：设置页的那格手动输入框、自动读取 Windows\n  网络设置的逻辑，以及一键更新下载时的相关分支全部删除；更新下载一律直连。\n- 界面、README、CHANGELOG 里相关措辞一并清理，工具内不再出现这类字眼。\n- 境外不通时仍走「境内更新源」和「从本地文件更新」两条兜底，能力不变；\n  旧配置文件里残留的字段不再被读取，无需手工清理。\n- `selftest.py` 的必需接口清单同步更新。",
-  "url": "https://github.com/Yum0Rin/cx-downloader/releases/tag/v1.4.7",
-  "published_at": "2026-11-14T07:47:13Z",
+  "version": "1.4.8",
+  "tag": "v1.4.8",
+  "name": "v1.4.8",
+  "body": "### 修复\r\n\r\n- **macOS 扫描报 `CERTIFICATE_VERIFY_FAILED` / `self-signed certificate`**：打包版自带的\r\n  CA 不认系统钥匙串里装的根证书（代理/企业证书场景），扫描和「扫描全部课程」都失败。\r\n  现在网络请求统一走 `http_open()`，macOS 上额外加载系统证书库 `/etc/ssl/cert.pem`\r\n  （等价于手动设 `SSL_CERT_FILE`，但不用再敲命令行），**仍是严格校验，不关验证**；\r\n  证书库异常时安全退回默认，不让程序起不来。\r\n- **Windows 圆角黑块**：界面上按钮、输入框、卡片的圆角处出现近黑色直角缺口。\r\n  根因是 CustomTkinter 6.0.0 在 Windows/Linux 默认用 `font_shapes`（自定义字体画抗锯齿\r\n  圆角），渲染有回归；macOS 走 `polygon_shapes` 一直正常。现在启动时统一切到\r\n  `polygon_shapes`，三平台观感一致；CTk 内部属性取不到就自动跳过，不影响旧版启动。\r\n\r\n### 变更\r\n\r\n- 界面状态标签与日志里的「缺失」改为「**未下载**」——文件其实没丢，只是本地还没有，\r\n  原词有歧义。内部数据字段不变。\r\n- **README 的 macOS 引导重写**：补上从打开终端到运行的完整逐步骤、Gatekeeper 放行、\r\n  以及 `usage: chmod` / `command not found` / 自签证书等常见报错对照；明确提醒命令要\r\n  手动敲、别从网页复制（会带反引号和隐藏字符）。\r\n",
+  "url": "https://github.com/Yum0Rin/cx-downloader/releases/tag/v1.4.8",
+  "published_at": "2026-11-27T06:41:15Z",
   "assets": [
     {
-      "name": "cx-downloader-v1.4.7-windows.exe",
-      "size": 15170085,
-      "sha256": "42cafc43b8f37e080adfb082cd953d2b68c89fe29ca7887df539dd55d64e7969",
-      "url": "https://gitee.com/yum0rin/cx-downloader-update/releases/download/v1.4.7/cx-downloader-v1.4.7-windows.exe"
+      "name": "cx-downloader-v1.4.8-windows.exe",
+      "size": 15170752,
+      "sha256": "40ae631fee67b9f94baf6d7a593a22d79722e12c4803256255a8f9e81720b447",
+      "url": "https://gitee.com/yum0rin/cx-downloader-update/releases/download/v1.4.8/cx-downloader-v1.4.8-windows.exe"
     },
     {
-      "name": "cx-downloader-v1.4.7-windows.exe",
-      "size": 15170085,
-      "sha256": "42cafc43b8f37e080adfb082cd953d2b68c89fe29ca7887df539dd55d64e7969",
-      "url": "https://github.com/Yum0Rin/cx-downloader/releases/download/v1.4.7/cx-downloader-v1.4.7-windows.exe"
+      "name": "cx-downloader-v1.4.8-windows.exe",
+      "size": 15170752,
+      "sha256": "40ae631fee67b9f94baf6d7a593a22d79722e12c4803256255a8f9e81720b447",
+      "url": "https://github.com/Yum0Rin/cx-downloader/releases/download/v1.4.8/cx-downloader-v1.4.8-windows.exe"
     }
   ]
 }
