@@ -40,6 +40,26 @@ from tkinter import colorchooser, filedialog, messagebox
 
 import customtkinter as ctk
 
+
+def _use_robust_corner_rendering():
+    """统一用 polygon_shapes 画圆角，规避 CTk 6.0.0 在 Windows 上的圆角黑块。
+
+    CTk 6.0.0 在 Windows/Linux 默认用 font_shapes（拿自定义 shapes 字体画抗锯齿
+    圆角），实测 Windows 上按钮/输入框/卡片的圆角会被近黑直角块切出缺口；macOS
+    走 polygon_shapes 没有这问题。切到 polygon_shapes 让三平台观感一致。
+    这是 CTk 内部属性，取不到就跳过，绝不让程序起不来。
+    """
+    try:
+        engine = getattr(ctk, "DrawEngine", None)
+        if (engine is not None
+                and getattr(engine, "preferred_drawing_method", None) == "font_shapes"):
+            engine.preferred_drawing_method = "polygon_shapes"
+    except Exception:  # noqa: BLE001 —— 绘制兜底，不能影响启动
+        pass
+
+
+_use_robust_corner_rendering()
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cx_download as core  # noqa: E402
@@ -69,8 +89,6 @@ def download_update_package(asset: str, tmp: str, total: int = 0,
     - 两次尝试都失败抛 RuntimeError，残包同样保留。
     - `conn_timeout` 是单次 socket 读超时，换源时会调小，避免挂死的源拖住整个更新。
     """
-    opener = urllib.request.build_opener()
-
     last: Exception | None = None
     for attempt in range(2):
         done = os.path.getsize(tmp) if os.path.exists(tmp) else 0
@@ -82,7 +100,7 @@ def download_update_package(asset: str, tmp: str, total: int = 0,
         try:
             req = urllib.request.Request(asset, headers=headers)
             started = time.time()
-            with opener.open(req, timeout=conn_timeout) as r:
+            with core.http_open(req, conn_timeout) as r:
                 # 服务端忽略 Range（回 200）→ 只能从头写
                 if done and getattr(r, "status", 200) == 200:
                     done = 0
@@ -1080,7 +1098,7 @@ class CanvasTaskList(ctk.CTkFrame):
                 color = (pair("ok")[ti] if t["same"]
                          else ("#B26A00" if ti == 0 else "#F0B35B"))
             else:
-                state = "缺失"
+                state = "未下载"
                 color = "#C03A2B" if ti == 0 else "#EE7B6E"
             ids.append(self.canvas.create_text(
                 w - int(12 * self.scale), cy, anchor="e", text=state,
@@ -2490,7 +2508,7 @@ class App(ctk.CTk):
         HintIcon(
             all_box,
             "扫描全部课程：列出账号全部课程（按开课时间排序、标进行中/未开始/已结束），\n"
-            "勾选后逐门检查已有/有更新/缺失；特殊/大文件单独成组并询问。",
+            "勾选后逐门检查已有/有更新/未下载；特殊/大文件单独成组并询问。",
         ).pack(side="left", padx=(0, 6))
 
         self.btn_start = ctk.CTkButton(
@@ -3352,7 +3370,7 @@ class App(ctk.CTk):
                     continue
                 s = rep["summary"]
                 say(f"  已有 {s['same']} · 有更新 {s['updated']} · "
-                    f"缺失 {s['missing']} · 特殊 {s['special']}", "ok")
+                    f"未下载 {s['missing']} · 特殊 {s['special']}", "ok")
                 self._all_reports.append(rep)
                 self._special_pending.extend(
                     [f for f in rep["files"] if f.get("special")])
@@ -3408,7 +3426,7 @@ class App(ctk.CTk):
                 say(f"课程：{rep['name']}", "ok")
                 say(f"本地目录：{rep['local_dir'] or '（无）'}")
                 say(f"已有 {s['same']} · 有更新 {s['updated']} · "
-                    f"缺失 {s['missing']} · 特殊 {s['special']}", "ok")
+                    f"未下载 {s['missing']} · 特殊 {s['special']}", "ok")
                 self._special_pending.extend(
                     [f for f in rep["files"] if f.get("special")])
                 self.q.put(("scan_files", (
@@ -3481,7 +3499,7 @@ class App(ctk.CTk):
             text_color=pair("primary") if n else pair("muted"),
         )
         if n:
-            self.log(f"完成：{n} 个文件（已有 {same}、有更新 {updated}、缺失 {missing}）。"
+            self.log(f"完成：{n} 个文件（已有 {same}、有更新 {updated}、未下载 {missing}）。"
                      f"勾选后点「开始下载」。", "head")
         elif self._scan_login_failed:
             self.log("扫描中断：先把登录态弄好，再点「扫描」重试。", "err")
@@ -3499,10 +3517,10 @@ class App(ctk.CTk):
             for rep in self._all_reports:
                 s = rep["summary"]
                 lines.append(f"{elide(rep['name'], 28)}：已有 {s['same']} / "
-                             f"有更新 {s['updated']} / 缺失 {s['missing']}")
+                             f"有更新 {s['updated']} / 未下载 {s['missing']}")
             preview = "\n".join(lines[:12]) + ("\n…" if len(lines) > 12 else "")
             summary = (f"共 {courses} 门课，{n} 个文件\n"
-                       f"已有 {same} · 有更新 {updated} · 缺失 {missing} · "
+                       f"已有 {same} · 有更新 {updated} · 未下载 {missing} · "
                        f"特殊/大文件 {len(special_names)}\n\n{preview}")
             if special_names:
                 preview_sp = "\n".join(special_names[:8]) + (

@@ -47,7 +47,7 @@ cookies.sqlite 复用登录，不用手动复制 Cookie；读不到再用 `--coo
 
     # 只检查本地（不下载）：按课程名找本地目录，递归比对是否已有
     python cx_download.py "<课程页链接>" --check-local --local-root "D:\\课程"
-    # 检查后只补缺失的普通文件；视频/安装包/压缩包/大文件要显式 --include-special
+    # 检查后只补未下载的普通文件；视频/安装包/压缩包/大文件要显式 --include-special
     python cx_download.py "<课程页链接>" --check-local --download-missing
     # 把检查结果写成 JSON
     python cx_download.py "<课程页链接>" --check-local --report-json report.json
@@ -56,7 +56,7 @@ cookies.sqlite 复用登录，不用手动复制 Cookie；读不到再用 `--coo
     -o, --out DIR      保存目录（默认 ./cx_download）
     --check-local      只检查本地，不下载
     --local-root DIR   本地课程根目录（默认同 --out）
-    --download-missing 配合 --check-local：只下缺失的普通文件
+    --download-missing 配合 --check-local：只下未下载的普通文件
     --include-special  配合 --check-local：特殊/大文件也一起下
     --large-mb N       大文件阈值（默认 100 MB）
     --pdf              除原文件外，额外下载 PDF
@@ -83,6 +83,7 @@ import queue
 import re
 import shutil
 import socket
+import ssl
 import sqlite3
 import sys
 import tempfile
@@ -98,7 +99,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
-__version__ = "1.4.7"
+__version__ = "1.4.8"
 GITHUB_REPO = "Yum0Rin/cx-downloader"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"
@@ -116,6 +117,32 @@ COURSE_URL_RE = re.compile(
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+# macOS 上 PyInstaller 单文件程序自带一套 CA，不认系统钥匙串里用户/代理装的
+# 根证书，访问用这类证书签名的站点会报 CERTIFICATE_VERIFY_FAILED
+# （self-signed certificate in certificate chain）。补挂 /etc/ssl/cert.pem
+# 等价于手动设 SSL_CERT_FILE，但不用用户每次敲命令行；仍是严格校验，不关验证。
+_OPENER: "urllib.request.OpenerDirector | None" = None
+
+
+def _build_opener() -> "urllib.request.OpenerDirector":
+    if sys.platform == "darwin" and os.path.exists("/etc/ssl/cert.pem"):
+        try:
+            ctx = ssl.create_default_context()
+            ctx.load_verify_locations(cafile="/etc/ssl/cert.pem")
+            return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+        except Exception:  # noqa: BLE001 —— 证书库异常退回默认，不让程序起不来
+            pass
+    return urllib.request.build_opener()
+
+
+def http_open(req: urllib.request.Request, timeout: int):
+    """统一 HTTP 入口；macOS 上额外信任系统 CA，其余平台保持默认行为。"""
+    global _OPENER
+    if _OPENER is None:
+        _OPENER = _build_opener()
+    return _OPENER.open(req, timeout=timeout)
 
 
 def extract_objectids(text: str) -> list[str]:
@@ -226,7 +253,7 @@ def parse_hsize(text: str) -> int:
 
 def http_get(url: str, headers: dict[str, str], timeout: int) -> bytes:
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with http_open(req, timeout) as resp:
         return resp.read()
 
 
@@ -283,7 +310,7 @@ def download(url: str, dest: str, timeout: int, retries: int = 3,
             headers["Range"] = f"bytes={done}-"
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with http_open(req, timeout) as resp:
                 # 服务端不支持 Range（忽略后仍回 200）→ 只能从头写
                 if done and resp.status == 200:
                     done = 0
@@ -1178,7 +1205,7 @@ def remote_probe(url: str, cookie: str | None = None, timeout: int = 60,
     if cookie:
         headers["Cookie"] = cookie
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with http_open(req, timeout) as resp:
         total: int | None = None
         cr = resp.headers.get("Content-Range") or ""
         if "/" in cr:
@@ -1465,7 +1492,7 @@ def check_local_course(cookie: str | None, url: str, base: str,
                        timeout: int = 60, progress=None,
                        large_bytes: int = LARGE_BYTES,
                        use_cache: bool = True, workers: int = 4) -> dict:
-    """扫描一门课，并对照本地课程文件夹（递归）判断已有/缺失/特殊。
+    """扫描一门课，并对照本地课程文件夹（递归）判断已有/未下载/特殊。
 
     只读，不下载。返回 {name, local_dir, files, summary}。
     """
@@ -1482,7 +1509,7 @@ def check_local_course(cookie: str | None, url: str, base: str,
     if local_dir:
         say(f"本地课程目录：{local_dir}")
     else:
-        say("本地没找到对应课程目录，按缺失处理")
+        say("本地没找到对应课程目录，按未下载处理")
 
     files: list[dict] = []
     try:
@@ -1678,7 +1705,7 @@ def _fetch_release(kind: str, url: str, current: str,
     req = urllib.request.Request(
         url, headers={"User-Agent": UA,
                      "Accept": "application/json, text/plain, */*"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with http_open(req, timeout) as resp:
         if kind == "html":
             return _html_release_info(resp.geturl() or "", current)
         label = "境内更新清单" if kind == "manifest" else "GitHub API"
@@ -1939,7 +1966,7 @@ def main() -> int:
     p.add_argument("--local-root", default=None,
                    help="本地课程根目录（默认同 --out）")
     p.add_argument("--download-missing", action="store_true",
-                   help="配合 --check-local：下载缺失的普通文件")
+                   help="配合 --check-local：下载未下载的普通文件")
     p.add_argument("--include-special", action="store_true",
                    help="配合 --check-local：视频/安装包/压缩包/大文件也一起下载")
     p.add_argument("--large-mb", type=int, default=100,
@@ -1991,11 +2018,11 @@ def main() -> int:
             log(f"  课程：{rep['name']}")
             log(f"  本地目录：{rep['local_dir'] or '（无）'}")
             log(f"  平台 {s['total']} 个；已有 {s['present']}（内容相同 {s['same']}）；"
-                f"缺失 {s['missing']}；特殊/大文件 {s['special']}")
+                f"未下载 {s['missing']}；特殊/大文件 {s['special']}")
             for f in rep["files"]:
                 if f.get("exists"):
                     continue
-                tag = "特殊" if f.get("special") else "缺失"
+                tag = "特殊" if f.get("special") else "未下载"
                 extra = f" · {f.get('special_reason')}" if f.get("special") else ""
                 log(f"    [{tag}] {f.get('name')}（{f.get('hsize') or ''}）{extra}")
             if s["special"] and not args.include_special:
@@ -2020,7 +2047,7 @@ def main() -> int:
                 elif f.get("objectid"):
                     jobs.append(("oid", f["objectid"], target, f.get("name")))
         if not jobs:
-            log("没有需要下载的缺失文件。")
+            log("没有未下载的文件需要补下。")
             return rc
 
     for u in ([] if args.check_local else course_urls):

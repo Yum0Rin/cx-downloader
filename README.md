@@ -47,21 +47,74 @@
 | 平台 | 文件 | 备注 |
 | --- | --- | --- |
 | Windows | `cx-downloader-<版本>-windows.exe` | 双击运行；PyInstaller 单文件包，杀软误报很常见，加白名单即可 |
-| macOS | `cx-downloader-<版本>-macos` | 终端里 `chmod +x` 后运行（单文件可执行程序，不是 `.app`） |
+| macOS | `cx-downloader-<版本>-macos` | 单文件可执行程序（不是 `.app`），按下面步骤在终端运行 |
 | Linux | `cx-downloader-<版本>-linux` | `chmod +x` 后运行；系统需有 `libtk8.6` / `libtcl8.6` |
 
-<details>
-<summary>macOS 报「已损坏 / 无法验证开发者」怎么办</summary>
+#### macOS 完整安装步骤（照着敲就行）
+
+下载下来的是一个**没有扩展名的可执行文件**，macOS 不允许直接双击，需要从「终端」启动。
+下面每一步都用键盘**手动敲**，不要从网页或聊天里复制——复制常会带上反引号 `` ` `` 或
+看不到的空格，导致命令报错。
+
+**1. 打开文件所在的文件夹**
+
+浏览器下载的文件一般在「下载 / Downloads」。在访达里进去，记下文件名，例如
+`cx-downloader-v1.4.8-macos`（版本名以你实际下载到的为准）。
+
+**2. 打开终端**
+
+按 `Command + 空格` 搜「终端」（Terminal），回车打开。
+
+**3. 进入下载文件夹**（敲完按回车）
 
 ```bash
 cd ~/Downloads
-chmod +x cx-downloader-v1.4.0-macos
-xattr -d com.apple.quarantine cx-downloader-v1.4.0-macos   # 报 No such xattr 可忽略
-./cx-downloader-v1.4.0-macos
 ```
 
-也可以**右键 → 打开**放行一次。官方包是 **arm64**，Intel Mac 若报
-`Bad CPU type in executable`，请改用下面的「方式二」。
+**4. 给文件加执行权限**（只需做一次）
+
+```bash
+chmod +x cx-downloader-v1.4.8-macos
+```
+
+> `+x` 和文件名之间**必须有一个空格**。写成 `chmod +xcx-downloader...`
+> 会报 `usage: chmod ...`，不会有其它后果，补上空格重敲即可。
+> 文件名可以只敲前几个字母后按 `Tab` 让终端自动补全，最保险。
+
+**5. 运行**
+
+```bash
+./cx-downloader-v1.4.8-macos
+```
+
+界面弹出来就成了。以后再打开，重复第 3、5 步即可，第 4 步不用再做。
+
+<details>
+<summary>第 5 步弹出「无法验证开发者 / 已损坏」的窗口怎么办</summary>
+
+这是 macOS 的 Gatekeeper 拦截，不是文件坏了。两种方式任选其一：
+
+- **方式 A**：点弹窗上的「完成」→ 到访达的「下载」里**右键**该文件 →「打开」→
+  再弹出的窗口里点「打开」。以后就不会再拦。
+- **方式 B**：终端里先执行下面这行去掉隔离标记，再重复第 5 步
+  （报 `No such xattr` 可忽略）：
+
+```bash
+xattr -d com.apple.quarantine cx-downloader-v1.4.8-macos
+```
+
+</details>
+
+<details>
+<summary>常见报错对照</summary>
+
+| 报错 | 原因 / 解决 |
+| --- | --- |
+| `usage: chmod ...` | `chmod +x` 后面漏了空格，或把反引号一起复制进去了。手动敲，加空格 |
+| `command not found: ls` / `no such file or directory` | 命令是从网页复制的，带了隐藏字符。手动敲 |
+| `no such file or directory: ./cx-downloader...` | 不在文件所在目录，或文件名敲错。重做第 3 步，用 `Tab` 补全文件名 |
+| `Bad CPU type in executable` | 官方包是 **arm64**（Apple 芯片）。Intel Mac 请用下面的「方式二」跑源码 |
+| 扫描日志报 `CERTIFICATE_VERIFY_FAILED` / `self-signed certificate` | v1.4.8 起已内置修复，不用再手动设环境变量。老版本可临时用 `SSL_CERT_FILE=/etc/ssl/cert.pem ./cx-downloader-<版本>-macos` 启动 |
 
 </details>
 
@@ -252,7 +305,9 @@ exe 镜像挂在同一仓库的 Release 附件：`https://gitee.com/yum0rin/cx-d
 | 扫出来是别人的课 | 看登录态那行的账号名，点「换号」切换 |
 | 「换号」里看不到刚登录的号 | 点「让 Firefox 开启实时读取」重启浏览器；或直接粘 Cookie |
 | Safari / Chrome 能自动读吗 | 不能，只自动读 Firefox；其它浏览器请手贴 Cookie |
-| macOS 提示已损坏 / 双击没反应 | 见「快速开始」里的 macOS 说明 |
+| macOS 提示已损坏 / 双击没反应 | 见「快速开始 → macOS 完整安装步骤」及 Gatekeeper 处理方式 |
+| macOS 报错 `usage: chmod` / `command not found` | 命令复制时带了反引号或隐藏字符；改为手动敲，`+x` 后留一个空格 |
+| macOS 扫描报 `CERTIFICATE_VERIFY_FAILED` | v1.4.8 起已内置修复；老版本临时加 `SSL_CERT_FILE=/etc/ssl/cert.pem` 启动 |
 
 ## 已知限制
 
